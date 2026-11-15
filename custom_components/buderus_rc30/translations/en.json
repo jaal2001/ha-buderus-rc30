@@ -1,0 +1,48 @@
+{
+  "title": "Buderus RC30 Schedule",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to EMS-ESP",
+        "description": "Read HC1, own 1 only. Enter a hostname or HTTP(S) origin and API key. Validation reads all 42 slots and can take up to 3 minutes. The selector POST requires an API key with command permission.",
+        "data": {
+          "host": "Hostname or HTTP(S) origin",
+          "api_key": "API key"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Replace API key",
+        "description": "Enter a replacement key. Validation reads all 42 slots.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_input": "Enter a valid hostname or HTTP(S) origin without credentials or a path, and a non-empty API key.",
+      "invalid_auth": "The API key was rejected. Check its command permissions.",
+      "cannot_connect": "Unable to reach EMS-ESP or complete the request. Check the host and network.",
+      "invalid_response": "The complete 42-slot schedule could not be verified. Check firmware compatibility and avoid concurrent switchtime readers."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "reauth_successful": "The API key was updated."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "schedule": {
+        "name": "Occupied schedule slots"
+      },
+      "free_slots": {
+        "name": "Free schedule slots"
+      },
+      "active_program": {
+        "name": "Active program"
+      },
+      "last_success": {
+        "name": "Last verified poll"
+      }
+    }
+  }
+}
