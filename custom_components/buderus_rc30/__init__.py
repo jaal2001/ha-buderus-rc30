@@ -1,15 +1,33 @@
 """Read-only Buderus RC30 schedule through EMS-ESP."""
 
+from pathlib import Path
+
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY, CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import EmsEspClient
 from .coordinator import Rc30Coordinator
 
 PLATFORMS = [Platform.SENSOR]
 type Rc30ConfigEntry = ConfigEntry[Rc30Coordinator]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Serve only the bundled card module, once per integration setup."""
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                "/buderus_rc30/buderus-rc30-schedule-card.js",
+                str(Path(__file__).parent / "www" / "buderus-rc30-schedule-card.js"),
+                False,
+            )
+        ]
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool:
