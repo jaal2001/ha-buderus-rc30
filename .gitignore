@@ -205,6 +205,13 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Home Assistant local state and credentials
+.storage/
+secrets.yaml
+rc30_api_key
+*.key
+*.pem
+
 # Ruff stuff:
 .ruff_cache/
 

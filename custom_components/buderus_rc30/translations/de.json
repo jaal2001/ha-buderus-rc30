@@ -1,0 +1,48 @@
+{
+  "title": "Buderus RC30 Wochenprogramm",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit EMS-ESP verbinden",
+        "description": "Liest ausschließlich Heizkreis 1, own 1. Hostname oder HTTP(S)-Adresse und API-Schlüssel eingeben. Die Prüfung liest alle 42 Slots und kann bis zu 3 Minuten dauern. Der Auswahl-POST benötigt einen Schlüssel mit Befehlsberechtigung.",
+        "data": {
+          "host": "Hostname oder HTTP(S)-Adresse",
+          "api_key": "API-Schlüssel"
+        }
+      },
+      "reauth_confirm": {
+        "title": "API-Schlüssel ersetzen",
+        "description": "Neuen Schlüssel eingeben. Zur Prüfung werden alle 42 Slots gelesen.",
+        "data": {
+          "api_key": "API-Schlüssel"
+        }
+      }
+    },
+    "error": {
+      "invalid_input": "Gültigen Hostnamen oder HTTP(S)-Adresse ohne Zugangsdaten und Pfad sowie einen nicht leeren API-Schlüssel eingeben.",
+      "invalid_auth": "Der API-Schlüssel wurde abgelehnt. Auch die Befehlsberechtigung prüfen.",
+      "cannot_connect": "EMS-ESP ist nicht erreichbar oder der Abruf ist fehlgeschlagen. Adresse und Netzwerk prüfen.",
+      "invalid_response": "Das vollständige Programm mit 42 Slots konnte nicht verifiziert werden. Firmware prüfen und parallele Schaltzeitabfragen vermeiden."
+    },
+    "abort": {
+      "already_configured": "Dieses Gateway ist bereits eingerichtet.",
+      "reauth_successful": "Der API-Schlüssel wurde aktualisiert."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "schedule": {
+        "name": "Belegte Schaltpunkt-Slots"
+      },
+      "free_slots": {
+        "name": "Freie Schaltpunkt-Slots"
+      },
+      "active_program": {
+        "name": "Aktives Programm"
+      },
+      "last_success": {
+        "name": "Letzter verifizierter Abruf"
+      }
+    }
+  }
+}
