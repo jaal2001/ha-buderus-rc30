@@ -12,7 +12,7 @@ with ZipFile(OUTPUT, "w", compression=ZIP_DEFLATED) as archive:
     for path in sorted(SOURCE.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts:
             continue
-        if path.suffix not in (".py", ".json", ".png"):
+        if path.suffix not in (".py", ".json", ".png", ".js"):
             continue
         info = ZipInfo(path.relative_to(ROOT).as_posix(), date_time=(2026, 1, 1, 0, 0, 0))
         info.compress_type = ZIP_DEFLATED

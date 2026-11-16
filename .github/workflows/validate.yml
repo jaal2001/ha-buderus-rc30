@@ -22,6 +22,12 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest -q --cov=custom_components.buderus_rc30 --cov-report=term-missing
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno lint custom_components/buderus_rc30/www tests/frontend
+      - run: deno fmt --check custom_components/buderus_rc30/www tests/frontend
+      - run: deno test tests/frontend
       - name: Build installable package
         run: python scripts/package.py
       - uses: actions/upload-artifact@v4
