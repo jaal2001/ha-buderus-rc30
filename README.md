@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.2.0
+# Buderus RC30 Schedule — v0.2.1
 
 Read-only Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. It reads all **42 physical slots (00–41)** without
@@ -94,7 +94,7 @@ it performs no API requests or service calls and cannot write switching times.
 4. Enter this URL and select **JavaScript module**:
 
    ```text
-   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.0
+   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.1
    ```
 
    For a YAML-managed resource list, use:
@@ -103,7 +103,7 @@ it performs no API requests or service calls and cannot write switching times.
    lovelace:
      resource_mode: yaml
      resources:
-       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.0
+       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.1
          type: module
    ```
 

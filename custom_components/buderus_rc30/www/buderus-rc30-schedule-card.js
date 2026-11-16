@@ -423,7 +423,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         }</span>${readable}</p></div>`;
       }).join("")
     }
-      <p class="hint">Tag antippen für genaue Zeiten. Heizzeiten laut Programm, kein Brennerstatus.</p>`;
+      <p class="hint">Tag antippen für genaue Zeiten. Angezeigt werden die programmierten Heiz- und Absenkzeiten.</p>`;
   }
 }
 
