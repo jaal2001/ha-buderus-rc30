@@ -345,6 +345,11 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     this._expanded = new Set();
     this._draft = null;
     this._history = [];
+    this._beforeUnload = (event) => {
+      if (!this._hasUnsavedChanges()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
     this.shadowRoot.addEventListener("click", (event) => {
       const action = event.target.closest?.("button[data-action]");
       if (action && !action.disabled) {
@@ -366,7 +371,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     });
     this.shadowRoot.addEventListener("submit", (event) => {
       event.preventDefault();
-      this._savePoint();
+      this._applyPoint();
     });
   }
 
@@ -403,12 +408,14 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   connectedCallback() {
+    globalThis.addEventListener("beforeunload", this._beforeUnload);
     this._timer = setInterval(() => this._render(), 60_000);
     this._render();
   }
 
   disconnectedCallback() {
     clearInterval(this._timer);
+    globalThis.removeEventListener("beforeunload", this._beforeUnload);
   }
 
   getCardSize() {
@@ -552,14 +559,37 @@ export class BuderusRc30ScheduleCard extends ElementBase {
 
   _handleAction(action, index) {
     this._draftError = null;
+    if (
+      ["add", "edit", "remove", "undo"].includes(action) &&
+      this._pointFormDirty()
+    ) {
+      this._pendingAction = { action, index };
+      this._confirmPointCancel = true;
+      this._render();
+      return;
+    }
     if (action === "discard") {
-      if (this._draft && draftChanges(this._draft).length) {
+      if (this._hasUnsavedChanges()) {
         this._confirmDiscard = true;
       } else this._clearDraft();
     } else if (action === "confirm-discard") this._clearDraft();
     else if (action === "keep") this._confirmDiscard = false;
-    else if (action === "cancel-point") this._pointForm = null;
-    else {
+    else if (action === "cancel-point") {
+      if (this._pointFormDirty()) this._confirmPointCancel = true;
+      else this._pointForm = null;
+    } else if (action === "keep-point") {
+      this._confirmPointCancel = false;
+      this._pendingAction = null;
+    } else if (action === "discard-point") {
+      this._pointForm = null;
+      this._confirmPointCancel = false;
+      const pending = this._pendingAction;
+      this._pendingAction = null;
+      if (pending) {
+        this._handleAction(pending.action, pending.index);
+        return;
+      }
+    } else {
       try {
         const blocked = draftBlockReason(this._currentEntity(), this._draft);
         if (blocked) throw new Error(blocked);
@@ -593,8 +623,11 @@ export class BuderusRc30ScheduleCard extends ElementBase {
               mode: slot.mode,
             };
           } else if (action === "remove") {
-            this._remember(changeDraft(this._draft, Number(index), null));
-            this._pointForm = null;
+            const slot = this._draft.slots.find((slot) =>
+              slot.slot === index && slot.occupied
+            );
+            if (!slot) throw new Error("Schaltpunkt nicht gefunden.");
+            this._pointForm = { ...slot, index: Number(index), kind: "delete" };
           } else if (action === "undo" && this._history.length) {
             this._draft = this._history.pop();
             this._pointForm = null;
@@ -619,9 +652,32 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     this._history = [];
     this._confirmDiscard = false;
     this._draftError = null;
+    this._confirmPointCancel = false;
+    this._pendingAction = null;
   }
 
-  _savePoint() {
+  _pointFormDirty() {
+    if (!this._pointForm) return false;
+    if (this._pointForm.index === null || this._pointForm.kind === "delete") {
+      return true;
+    }
+    const before = this._draft?.slots.find((slot) =>
+      Number(slot.slot) === this._pointForm.index
+    );
+    return !before ||
+      ["day", "time", "mode"].some((key) =>
+        before[key] !== this._pointForm[key]
+      );
+  }
+
+  _hasUnsavedChanges() {
+    return Boolean(
+      this._draft &&
+        (draftChanges(this._draft).length || this._pointFormDirty()),
+    );
+  }
+
+  _applyPoint() {
     try {
       if (
         !this._draft || !this._pointForm || this._draftEntity !== this._entity
@@ -629,10 +685,16 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       const blocked = draftBlockReason(this._currentEntity(), this._draft);
       if (blocked) throw new Error(blocked);
       this._remember(
-        changeDraft(this._draft, this._pointForm.index, this._pointForm),
+        changeDraft(
+          this._draft,
+          this._pointForm.index,
+          this._pointForm.kind === "delete" ? null : this._pointForm,
+        ),
       );
       this._pointForm = null;
       this._draftError = null;
+      this._confirmPointCancel = false;
+      this._pendingAction = null;
     } catch (error) {
       this._draftError = error.message;
     }
@@ -671,11 +733,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }>+ Schaltpunkt</button>
         <button class="action" type="button" data-action="undo" ${
       blocked || !this._history.length ? "disabled" : ""
-    }>Rückgängig</button>
-        <button class="action" type="button" data-action="discard">Entwurf verwerfen</button></div>
+    }>Rückgängig</button></div>
       ${
       this._confirmDiscard
-        ? `<p class="notice">Alle Entwurfsänderungen verwerfen?</p><div class="toolbar"><button class="action" type="button" data-action="confirm-discard">Ja, verwerfen</button><button class="action" type="button" data-action="keep">Weiter bearbeiten</button></div>`
+        ? `<p class="notice" role="alert">Ungespeicherte Änderungen verwerfen? Sie werden nicht gespeichert.</p><div class="toolbar"><button class="action" type="button" data-action="confirm-discard">Änderungen verwerfen</button><button class="action" type="button" data-action="keep">Weiter bearbeiten</button></div>`
         : ""
     }
       ${
@@ -686,6 +747,11 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         : ""
     }
       ${this._pointForm ? this._pointFormMarkup(disabled) : ""}
+      ${
+      this._confirmPointCancel
+        ? `<p class="notice" role="alert">Diese Eingabe wurde noch nicht mit Apply bestätigt. Eingabe verwerfen?</p><div class="toolbar"><button class="action" type="button" data-action="discard-point">Eingabe verwerfen</button><button class="action" type="button" data-action="keep-point">Weiter bearbeiten</button></div>`
+        : ""
+    }
       <ul class="point-list">${
       points.map((slot) =>
         `<li class="point-row"><span class="point-label">${
@@ -711,11 +777,18 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         }</ul>`
         : '<p class="hint">Noch keine Änderungen.</p>'
     }
+      <div class="toolbar"><button class="action" type="button" data-action="discard">Cancel</button><button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div>
+      <p class="hint">Apply bestätigt nur den Entwurf. Save ist noch nicht verfügbar: Die abgesicherte Übertragung an die Heizung folgt separat.</p>
     </section>`;
   }
 
   _pointFormMarkup(disabled) {
     const point = this._pointForm;
+    if (point.kind === "delete") {
+      return `<form class="point-form"><h3>Schaltpunkt entfernen</h3><p>${
+        escapeHtml(this._pointLabel(point))
+      }</p><p class="hint">Apply entfernt diesen Schaltpunkt nur aus dem Entwurf.</p><div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button></div></form>`;
+    }
     return `<form class="point-form"><h3>${
       point.index === null ? "Neuer Schaltpunkt" : "Schaltpunkt ändern"
     }</h3><div class="fields">
@@ -735,7 +808,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       point.mode === "off" ? "selected" : ""
     }>Absenkzeit</option></select></label>
       </div><p class="hint">10-Minuten-Schritte; 24:00 ist möglich.</p>
-      <div class="toolbar"><button class="action primary" type="submit" ${disabled}>Im Entwurf vormerken</button><button class="action" type="button" data-action="cancel-point">Abbrechen</button></div></form>`;
+      <div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button></div></form>`;
   }
 
   _weekMarkup(week, clock) {

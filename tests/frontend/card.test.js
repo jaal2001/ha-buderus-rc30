@@ -125,13 +125,14 @@ Deno.test("local add, edit, remove and undo keep the original sensor unchanged",
   assert(card._draft, "Draft should start");
   card._handleAction("add");
   card._pointForm = { index: null, day: "tu", time: "08:00", mode: "on" };
-  card._savePoint();
+  card._applyPoint();
   assert(card._draft.slots[2].day === "tu", "New point not added");
   card._handleAction("edit", "02");
   card._pointForm.time = "08:10";
-  card._savePoint();
+  card._applyPoint();
   assert(card._draft.slots[2].time === "08:10", "Point not edited");
   card._handleAction("remove", "02");
+  card._applyPoint();
   assert(!card._draft.slots[2].occupied, "Point not removed");
   card._handleAction("undo");
   assert(card._draft.slots[2].time === "08:10", "Undo did not restore point");
@@ -150,6 +151,7 @@ Deno.test("discard requires confirmation and cancel keeps the draft", () => {
   const card = makeCard();
   card._handleAction("start");
   card._handleAction("remove", "00");
+  card._applyPoint();
   card._handleAction("discard");
   assert(
     card._confirmDiscard && card._draft,
@@ -170,6 +172,7 @@ Deno.test("loss of connectivity preserves the draft and blocks further mutation"
   const card = makeCard();
   card._handleAction("start");
   card._handleAction("remove", "00");
+  card._applyPoint();
   const saved = JSON.stringify(card._draft);
   card._hass.states["sensor.schedule"].state = "unavailable";
   card._handleAction("remove", "01");
@@ -197,7 +200,7 @@ Deno.test("a changed source blocks an open form's save and retains edits", () =>
   card._handleAction("edit", "00");
   card._pointForm.time = "06:10";
   card._hass.states["sensor.schedule"].attributes.slots[0].time = "06:20";
-  card._savePoint();
+  card._applyPoint();
   assert(card._draft.slots[0].time === "06:00", "Conflict save should fail");
   assert(card._draftError.includes("geändert"), "Conflict explanation missing");
   assert(
@@ -224,10 +227,97 @@ Deno.test("invalid form input stays editable and never changes the draft", () =>
   card._handleAction("add");
   card._pointForm.time = "06:35";
   const before = JSON.stringify(card._draft);
-  card._savePoint();
+  card._applyPoint();
   assert(JSON.stringify(card._draft) === before, "Invalid time was applied");
   assert(
     card._pointForm && card._draftError,
     "Form and validation error should remain",
+  );
+});
+
+Deno.test("deletion requires Apply and cancelling it preserves the draft", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("remove", "00");
+  assert(card._draft.slots[0].occupied, "Deletion happened before Apply");
+  card._handleAction("cancel-point");
+  assert(card._confirmPointCancel, "Pending deletion requires warning");
+  card._handleAction("discard-point");
+  assert(
+    card._draft.slots[0].occupied && !card._pointForm,
+    "Cancel changed the draft",
+  );
+  card._handleAction("remove", "00");
+  card._applyPoint();
+  assert(!card._draft.slots[0].occupied, "Apply should stage deletion");
+  assert(
+    card._hass.states["sensor.schedule"].attributes.slots[0].occupied,
+    "Apply changed live data",
+  );
+});
+
+Deno.test("Cancel warns about unapplied edits before any applied change", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("edit", "00");
+  card._pointForm.time = "06:10";
+  card._handleAction("discard");
+  assert(card._confirmDiscard, "Unapplied input must trigger Cancel warning");
+  card._handleAction("keep");
+  assert(card._pointForm.time === "06:10", "Continuing must preserve input");
+});
+
+Deno.test("switching points requires confirmation before dropping unapplied input", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("edit", "00");
+  card._pointForm.time = "06:10";
+  card._handleAction("edit", "01");
+  assert(
+    card._confirmPointCancel && card._pointForm.index === 0,
+    "Pending edit was lost",
+  );
+  card._handleAction("keep-point");
+  assert(card._pointForm.time === "06:10", "Continue should retain input");
+  card._handleAction("edit", "01");
+  card._handleAction("discard-point");
+  assert(
+    card._pointForm.index === 1,
+    "Confirmed switch did not open next point",
+  );
+  assert(card._draft.slots[0].time === "06:00", "Discarded input was applied");
+});
+
+Deno.test("browser unload warning is requested only for unsaved changes", () => {
+  const card = makeCard();
+  let warned = false;
+  const event = {
+    preventDefault() {
+      warned = true;
+    },
+    returnValue: undefined,
+  };
+  card._handleAction("start");
+  card._beforeUnload(event);
+  assert(!warned, "Unchanged draft should not request an unload warning");
+  card._handleAction("edit", "00");
+  card._pointForm.time = "06:10";
+  card._beforeUnload(event);
+  assert(
+    warned && event.returnValue === "",
+    "Unsaved input should request browser confirmation",
+  );
+});
+
+Deno.test("Save is visibly unavailable until controller transmission exists", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  assert(
+    /data-action="save" disabled/.test(card.shadowRoot.innerHTML),
+    "Save must not imply working transmission",
+  );
+  assert(
+    card.shadowRoot.innerHTML.includes("Save ist noch nicht verfügbar"),
+    "Save status is unclear",
   );
 });

@@ -156,13 +156,17 @@ The live sensor attributes and heating controller remain unchanged.
 - **+ Schaltpunkt** adds a day, time and heating/setback transition. Times must
   use ten-minute increments; `24:00` is accepted. The next available physical
   slot is used. At 42 occupied slots, additions are blocked until a slot is freed.
-- **Bearbeiten** changes an existing transition; **−** empties that physical slot
-  without renumbering any other point. The timeline and occupied/free count
-  update immediately within the draft.
+- **Bearbeiten** prepares a changed transition; **−** prepares removal of that
+  physical slot. **Apply** confirms each addition, edit or deletion into the
+  draft without renumbering any other point. The draft preview/count update only
+  after Apply. Apply performs no REST calls.
 - **Rückgängig** restores the previous draft action (up to 42 recent actions).
   The change preview compares each changed physical slot with the original data.
-- **Entwurf verwerfen** returns to the live view. A changed draft requires an
-  extra confirmation. Form cancellation keeps other draft edits.
+- **Cancel** returns to the live view after warning about unsaved changes.
+  Cancelling an individual form or switching to another point also warns before
+  dropping unconfirmed input. Other applied draft edits remain intact.
+- **Save** is shown disabled and explicitly marked unavailable until the separate
+  controller-transmission workflow is implemented. Apply is not a controller save.
 - Invalid values or conflicting opposite transitions at the same effective
   weekday/time are rejected before changing the draft.
 
@@ -175,7 +179,10 @@ attempted. The original non-atomic firmware snapshot limitation still applies.
 
 Drafts exist **only in the current card instance**, not in Home Assistant storage,
 GitHub or the gateway. Browser reloads, card removal/recreation or navigation that
-recreates the card can discard them. They are not a backup. There is deliberately
+recreates the card can discard them. The card requests the browser's standard
+unload confirmation for unsaved edits, but browsers may suppress it and Home
+Assistant navigation may not trigger a page unload. Use Cancel for the explicit
+in-card warning. Drafts are not a backup. There is deliberately
 no transmit/save-to-heating action in this version. Use the draft to verify editing
 and the visual preview before implementing a separate, reviewed write failsafe.
 
