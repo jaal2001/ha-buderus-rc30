@@ -1,4 +1,4 @@
-/** Read-only RC30 week view. No services, API calls or external dependencies. */
+/** RC30 week view and local drafts. No services, API calls or external dependencies. */
 
 const DAYS = ["mo", "tu", "we", "th", "fr", "sa", "su"];
 const LABELS = [
@@ -147,6 +147,107 @@ export function formatMinute(value) {
   }`;
 }
 
+/** Ignore poll timestamps when detecting changes to the actual source schedule. */
+export function scheduleFingerprint(attributes) {
+  return JSON.stringify(
+    [...attributes.slots].sort((a, b) => Number(a.slot) - Number(b.slot)).map((
+      { slot, occupied, day, time, mode },
+    ) => [slot, occupied, day, time, mode]),
+  );
+}
+
+export function createDraft(attributes, state) {
+  buildWeek(attributes, state);
+  return {
+    base: structuredClone(attributes),
+    slots: attributes.slots.map((slot) => ({ ...slot })),
+    fingerprint: scheduleFingerprint(attributes),
+  };
+}
+
+export function draftAttributes(draft) {
+  const occupied = draft.slots.filter((slot) => slot.occupied).length;
+  return { ...draft.base, slots: draft.slots, free_slots: 42 - occupied };
+}
+
+/** Return a new draft only after validating the complete resulting week. */
+export function changeDraft(draft, index, point) {
+  const slots = draft.slots.map((slot) => ({ ...slot }));
+  if (index === null) {
+    if (point === null) throw new Error("Kein Schaltpunkt ausgewählt.");
+    index = slots.filter((slot) =>
+      !slot.occupied
+    ).map((slot) => Number(slot.slot))
+      .sort((a, b) => a - b)[0];
+    if (index === undefined) {
+      throw new Error(
+        "Alle 42 Slots sind belegt. Zuerst einen Schaltpunkt löschen.",
+      );
+    }
+  }
+  if (!Number.isInteger(index) || index < 0 || index > 41) {
+    throw new Error("Ungültiger Schaltpunkt.");
+  }
+  const position = slots.findIndex((slot) => Number(slot.slot) === index);
+  if (position < 0) throw new Error("Schaltpunkt nicht gefunden.");
+  if (point === null && !slots[position].occupied) {
+    throw new Error("Dieser Slot ist bereits leer.");
+  }
+  slots[position] = {
+    slot: String(index).padStart(2, "0"),
+    occupied: point !== null,
+    day: point?.day ?? null,
+    time: point?.time ?? null,
+    mode: point?.mode ?? null,
+  };
+  const result = { ...draft, slots };
+  const attrs = draftAttributes(result);
+  buildWeek(attrs, String(42 - attrs.free_slots));
+  return result;
+}
+
+export function draftChanges(draft) {
+  return draft.slots.flatMap((slot) => {
+    const before = draft.base.slots.find((original) =>
+      original.slot === slot.slot
+    );
+    return JSON.stringify([
+        before.occupied,
+        before.day,
+        before.time,
+        before.mode,
+      ]) ===
+        JSON.stringify([slot.occupied, slot.day, slot.time, slot.mode])
+      ? []
+      : [{ before, after: slot }];
+  });
+}
+
+export function draftBlockReason(entity, draft, now = Date.now()) {
+  if (!entity || ["unavailable", "unknown"].includes(entity.state)) {
+    return "Live-Daten sind nicht verfügbar. Der Entwurf bleibt erhalten.";
+  }
+  try {
+    buildWeek(entity.attributes, entity.state);
+  } catch {
+    return "Live-Daten sind ungültig. Der Entwurf bleibt erhalten.";
+  }
+  const verified = Date.parse(entity.attributes.verified_at);
+  if (
+    !Number.isFinite(verified) || now - verified > STALE_AFTER ||
+    verified > now + 300_000
+  ) {
+    return "Ein aktueller verifizierter Abruf wird benötigt. Der Entwurf bleibt erhalten.";
+  }
+  if (entity.attributes.active_program !== "own 1") {
+    return "own 1 ist derzeit nicht aktiv. Die Bearbeitung ist pausiert.";
+  }
+  if (draft && scheduleFingerprint(entity.attributes) !== draft.fingerprint) {
+    return "Das Heizungsprogramm hat sich seit Entwurfsbeginn geändert. Bitte den Entwurf verwerfen und neu beginnen.";
+  }
+  return null;
+}
+
 function escapeHtml(value) {
   return String(value).replace(
     /[&<>"']/g,
@@ -209,6 +310,27 @@ const CSS = `
     background:var(--rc30-track); font-size:12px; line-height:1.6; }
   .error { margin-top:18px; font-size:13px; line-height:1.6; }
   .hint { margin:0; color:var(--secondary-text-color,#64717a); font-size:12px; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; }
+  .action { font:inherit; font-size:12px; color:var(--primary-text-color,#20262b);
+    background:var(--rc30-track); border:1px solid var(--divider-color,#dfe5e9);
+    border-radius:8px; padding:9px 12px; cursor:pointer; }
+  .action.primary { background:var(--primary-color,#1673ad); color:var(--text-primary-color,#fff); border-color:transparent; }
+  .action:disabled { opacity:.45; cursor:not-allowed; }
+  .action:focus-visible { outline:2px solid var(--primary-color,#1673ad); outline-offset:3px; }
+  .draft-area { border-top:1px solid var(--divider-color,#dfe5e9); margin-top:20px; padding-top:18px; }
+  h3 { font-size:16px; margin:0 0 10px; }
+  .point-list { list-style:none; padding:0; margin:14px 0; max-height:310px; overflow:auto; }
+  .point-row { display:flex; align-items:center; gap:7px; padding:8px 0; border-bottom:1px solid var(--divider-color,#dfe5e9); }
+  .point-label { flex:1; font-size:12px; }
+  .point-row .action { padding:7px 9px; }
+  .point-form { padding:14px; margin:14px 0; background:var(--rc30-track); border-radius:10px; }
+  .fields { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+  .fields label { font-size:11px; }
+  .fields input,.fields select { width:100%; min-width:0; margin:6px 0; padding:9px 5px;
+    border:1px solid var(--divider-color,#aaa); border-radius:5px; font:inherit;
+    background:var(--card-background-color,#fff); color:var(--primary-text-color,#20262b); }
+  .changes { margin:14px 0; padding-left:20px; font-size:12px; line-height:1.8; }
+  .draft-error { color:var(--error-color,#b33b35); font-size:12px; line-height:1.6; }
   @media (max-width:380px) { .body { padding:18px 14px; } h2 { font-size:21px; }
     .meta { font-size:11px; } .footer { flex-direction:column; gap:5px; } }
 `;
@@ -221,7 +343,14 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     super();
     this.attachShadow({ mode: "open" });
     this._expanded = new Set();
+    this._draft = null;
+    this._history = [];
     this.shadowRoot.addEventListener("click", (event) => {
+      const action = event.target.closest?.("button[data-action]");
+      if (action && !action.disabled) {
+        this._handleAction(action.dataset.action, action.dataset.index);
+        return;
+      }
       const button = event.target.closest?.("button[data-day]");
       if (!button) return;
       const day = Number(button.dataset.day);
@@ -231,9 +360,22 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       button.setAttribute("aria-expanded", String(open));
       this.shadowRoot.getElementById(`details-${day}`).hidden = !open;
     });
+    this.shadowRoot.addEventListener("input", (event) => {
+      const field = event.target.dataset.pointField;
+      if (field && this._pointForm) this._pointForm[field] = event.target.value;
+    });
+    this.shadowRoot.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this._savePoint();
+    });
   }
 
   setConfig(config) {
+    if (this._draft && config.entity !== this._config?.entity) {
+      throw new Error(
+        "Bitte den Entwurf verwerfen, bevor der Sensor gewechselt wird.",
+      );
+    }
     if (
       config.entity !== undefined &&
       (typeof config.entity !== "string" ||
@@ -270,7 +412,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   getCardSize() {
-    return 12 + this._expanded.size * 2;
+    return 12 + this._expanded.size * 2 + (this._draft ? 14 : 0);
   }
   getGridOptions() {
     return { columns: 12, rows: "auto", min_columns: 6 };
@@ -300,7 +442,14 @@ export class BuderusRc30ScheduleCard extends ElementBase {
           "Programmdaten sind derzeit nicht verfügbar. Bitte die Integration prüfen.",
         );
       }
-      const week = buildWeek(entity.attributes, entity.state);
+      const liveWeek = buildWeek(entity.attributes, entity.state);
+      const blocked = this._draft && this._draftEntity !== this._entity
+        ? "Der Programmsensor hat gewechselt. Bitte den Entwurf verwerfen."
+        : draftBlockReason(entity, this._draft);
+      const preview = this._draft ? draftAttributes(this._draft) : null;
+      const week = preview
+        ? buildWeek(preview, String(42 - preview.free_slots))
+        : liveWeek;
       const verified = new Date(entity.attributes.verified_at);
       if (!Number.isFinite(verified.getTime())) {
         throw new Error("Der Zeitstempel des Abrufs fehlt.");
@@ -317,6 +466,12 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }).format(verified);
       const active = entity.attributes.active_program;
       const warnings = [];
+      if (this._draft) {
+        warnings.push(
+          "Entwurfsvorschau – Änderungen sind nur in dieser Karte vorgemerkt. Das Heizungsprogramm bleibt unverändert.",
+        );
+        if (blocked) warnings.push(escapeHtml(blocked));
+      }
       if (active !== "own 1") {
         warnings.push(
           `Angezeigt wird own 1. Aktives Programm: ${
@@ -343,30 +498,244 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }
         ${
         week.days.length
-          ? this._weekMarkup(week, stale ? null : clock)
+          ? this._weekMarkup(week, stale || this._draft ? null : clock)
           : '<p class="notice">Keine Schaltpunkte vorhanden. Daraus lässt sich keine Heizphase ableiten.</p>'
       }
         <div class="footer"><span>${week.occupied} / 42 Slots belegt · ${
         42 - week.occupied
       } frei</span>
-          <span>Zeitzone ${escapeHtml(zone)}</span></div>`;
+          <span>Zeitzone ${escapeHtml(zone)}</span></div>
+          ${
+        this._draft
+          ? this._draftPanel(blocked)
+          : `<div class="toolbar"><button class="action" type="button" data-action="start" ${
+            blocked ? "disabled" : ""
+          }>Schaltzeiten als Entwurf bearbeiten</button></div>${
+            blocked ? `<p class="hint">${escapeHtml(blocked)}</p>` : ""
+          }`
+      }`;
     } catch (error) {
       content = `<p class="error" role="alert">${
         escapeHtml(error.message)
-      }</p>`;
+      }</p>${
+        this._draft
+          ? this._draftPanel(
+            "Live-Daten fehlen. Die Bearbeitung ist pausiert; dein Entwurf bleibt erhalten.",
+          )
+          : ""
+      }`;
     }
     const focusedDay = this.shadowRoot.activeElement?.dataset.day;
+    const focusedField = this.shadowRoot.activeElement?.dataset.pointField;
     this.shadowRoot.innerHTML =
       `<style>${CSS}</style><ha-card><div class="body">
       <p class="eyebrow">Buderus RC30 · Heizkreis 1</p>
       <div class="heading"><h2>${
         escapeHtml(this._config.title ?? "Wochenprogramm")
       }</h2>
-        <span class="badge">Nur Lesen</span></div>${content}</div></ha-card>`;
+        <span class="badge">${
+        this._draft ? "Entwurf" : "Nur Lesen"
+      }</span></div>${content}</div></ha-card>`;
     if (focusedDay !== undefined) {
       this.shadowRoot.querySelector(`button[data-day="${Number(focusedDay)}"]`)
         ?.focus({ preventScroll: true });
     }
+    if (focusedField && ["day", "time", "mode"].includes(focusedField)) {
+      this.shadowRoot.querySelector(`[data-point-field="${focusedField}"]`)
+        ?.focus({ preventScroll: true });
+    }
+  }
+
+  _currentEntity() {
+    return this._hass?.states[this._entity];
+  }
+
+  _handleAction(action, index) {
+    this._draftError = null;
+    if (action === "discard") {
+      if (this._draft && draftChanges(this._draft).length) {
+        this._confirmDiscard = true;
+      } else this._clearDraft();
+    } else if (action === "confirm-discard") this._clearDraft();
+    else if (action === "keep") this._confirmDiscard = false;
+    else if (action === "cancel-point") this._pointForm = null;
+    else {
+      try {
+        const blocked = draftBlockReason(this._currentEntity(), this._draft);
+        if (blocked) throw new Error(blocked);
+        if (action === "start") {
+          this._draft = createDraft(
+            this._currentEntity().attributes,
+            this._currentEntity().state,
+          );
+          this._draftEntity = this._entity;
+          this._history = [];
+        } else if (this._draft && this._draftEntity === this._entity) {
+          if (action === "add") {
+            if (draftAttributes(this._draft).free_slots === 0) {
+              throw new Error("Alle 42 Slots sind belegt.");
+            }
+            this._pointForm = {
+              index: null,
+              day: "mo",
+              time: "06:00",
+              mode: "on",
+            };
+          } else if (action === "edit") {
+            const slot = this._draft.slots.find((slot) =>
+              slot.slot === index && slot.occupied
+            );
+            if (!slot) throw new Error("Schaltpunkt nicht gefunden.");
+            this._pointForm = {
+              index: Number(index),
+              day: slot.day,
+              time: slot.time,
+              mode: slot.mode,
+            };
+          } else if (action === "remove") {
+            this._remember(changeDraft(this._draft, Number(index), null));
+            this._pointForm = null;
+          } else if (action === "undo" && this._history.length) {
+            this._draft = this._history.pop();
+            this._pointForm = null;
+          }
+        }
+      } catch (error) {
+        this._draftError = error.message;
+      }
+    }
+    this._render();
+  }
+
+  _remember(next) {
+    this._history.push(this._draft);
+    if (this._history.length > 42) this._history.shift();
+    this._draft = next;
+  }
+
+  _clearDraft() {
+    this._draft = null;
+    this._pointForm = null;
+    this._history = [];
+    this._confirmDiscard = false;
+    this._draftError = null;
+  }
+
+  _savePoint() {
+    try {
+      if (
+        !this._draft || !this._pointForm || this._draftEntity !== this._entity
+      ) return;
+      const blocked = draftBlockReason(this._currentEntity(), this._draft);
+      if (blocked) throw new Error(blocked);
+      this._remember(
+        changeDraft(this._draft, this._pointForm.index, this._pointForm),
+      );
+      this._pointForm = null;
+      this._draftError = null;
+    } catch (error) {
+      this._draftError = error.message;
+    }
+    this._render();
+  }
+
+  _pointLabel(slot) {
+    return slot.occupied
+      ? `${LABELS[DAYS.indexOf(slot.day)]} ${slot.time} · ${
+        slot.mode === "on" ? "Heizzeit" : "Absenkzeit"
+      }`
+      : "leer";
+  }
+
+  _draftPanel(blocked) {
+    const attrs = draftAttributes(this._draft);
+    const changes = draftChanges(this._draft);
+    const disabled = blocked ? "disabled" : "";
+    const points = this._draft.slots.filter((slot) => slot.occupied).sort((
+      a,
+      b,
+    ) =>
+      DAYS.indexOf(a.day) - DAYS.indexOf(b.day) ||
+      a.time.localeCompare(b.time) || Number(a.slot) - Number(b.slot)
+    );
+    return `<section class="draft-area" aria-label="Schaltzeitenentwurf">
+      <h3>Schaltpunkte bearbeiten</h3>
+      <p class="hint">Entwurf nur in diesem Browser-Tab. Neuladen verwirft ihn. Eine Übertragung an die Heizung ist in dieser Version nicht möglich.</p>
+      ${
+      blocked
+        ? `<p class="notice" role="status">${escapeHtml(blocked)}</p>`
+        : ""
+    }
+      <div class="toolbar"><button class="action primary" type="button" data-action="add" ${
+      blocked || attrs.free_slots === 0 ? "disabled" : ""
+    }>+ Schaltpunkt</button>
+        <button class="action" type="button" data-action="undo" ${
+      blocked || !this._history.length ? "disabled" : ""
+    }>Rückgängig</button>
+        <button class="action" type="button" data-action="discard">Entwurf verwerfen</button></div>
+      ${
+      this._confirmDiscard
+        ? `<p class="notice">Alle Entwurfsänderungen verwerfen?</p><div class="toolbar"><button class="action" type="button" data-action="confirm-discard">Ja, verwerfen</button><button class="action" type="button" data-action="keep">Weiter bearbeiten</button></div>`
+        : ""
+    }
+      ${
+      this._draftError
+        ? `<p class="draft-error" role="alert">${
+          escapeHtml(this._draftError)
+        }</p>`
+        : ""
+    }
+      ${this._pointForm ? this._pointFormMarkup(disabled) : ""}
+      <ul class="point-list">${
+      points.map((slot) =>
+        `<li class="point-row"><span class="point-label">${
+          escapeHtml(this._pointLabel(slot))
+        }</span>
+        <button class="action" type="button" data-action="edit" data-index="${slot.slot}" aria-label="Bearbeiten: ${
+          escapeHtml(this._pointLabel(slot))
+        }" ${disabled}>Bearbeiten</button>
+        <button class="action" type="button" data-action="remove" data-index="${slot.slot}" aria-label="Löschen: ${
+          escapeHtml(this._pointLabel(slot))
+        }" ${disabled}>−</button></li>`
+      ).join("")
+    }</ul>
+      <h3>Änderungsvorschau · ${changes.length}</h3>
+      ${
+      changes.length
+        ? `<ul class="changes">${
+          changes.map(({ before, after }) =>
+            `<li>${escapeHtml(this._pointLabel(before))} → <strong>${
+              escapeHtml(this._pointLabel(after))
+            }</strong></li>`
+          ).join("")
+        }</ul>`
+        : '<p class="hint">Noch keine Änderungen.</p>'
+    }
+    </section>`;
+  }
+
+  _pointFormMarkup(disabled) {
+    const point = this._pointForm;
+    return `<form class="point-form"><h3>${
+      point.index === null ? "Neuer Schaltpunkt" : "Schaltpunkt ändern"
+    }</h3><div class="fields">
+      <label>Tag<select data-point-field="day" ${disabled}>${
+      DAYS.map((day, i) =>
+        `<option value="${day}" ${point.day === day ? "selected" : ""}>${
+          LABELS[i]
+        }</option>`
+      ).join("")
+    }</select></label>
+      <label>Uhrzeit<input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" data-point-field="time" value="${
+      escapeHtml(point.time)
+    }" required ${disabled}></label>
+      <label>Phase<select data-point-field="mode" ${disabled}><option value="on" ${
+      point.mode === "on" ? "selected" : ""
+    }>Heizzeit</option><option value="off" ${
+      point.mode === "off" ? "selected" : ""
+    }>Absenkzeit</option></select></label>
+      </div><p class="hint">10-Minuten-Schritte; 24:00 ist möglich.</p>
+      <div class="toolbar"><button class="action primary" type="submit" ${disabled}>Im Entwurf vormerken</button><button class="action" type="button" data-action="cancel-point">Abbrechen</button></div></form>`;
   }
 
   _weekMarkup(week, clock) {
@@ -502,6 +871,6 @@ if (globalThis.customElements && !customElements.get(TAG)) {
     type: TAG,
     name: "Buderus RC30 Wochenprogramm",
     preview: true,
-    description: "Live-Wochenübersicht für HC1, own 1. Nur Lesen.",
+    description: "Live-Wochenübersicht und lokale Entwürfe für HC1, own 1.",
   });
 }

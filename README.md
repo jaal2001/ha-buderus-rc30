@@ -1,13 +1,13 @@
-# Buderus RC30 Schedule — v0.2.1
+# Buderus RC30 Schedule — v0.3.0
 
 Read-only Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. It reads all **42 physical slots (00–41)** without
 changing switching times, the selected program, temperatures or operating modes.
 
 The v0.1 read integration has been installed successfully by the project owner:
-all 42 slots and the expected occupied/free counts were confirmed. Version 0.2
-adds the read-only weekly dashboard card. Its layout still needs verification
-inside the user's Home Assistant. Automated tests use synthetic data, not a live
+all 42 slots and the expected occupied/free counts were confirmed. The weekly dashboard card has also been confirmed visually by the owner.
+Version 0.3 adds a local draft editor; its new controls still require a live
+dashboard acceptance check. Automated tests use synthetic data, not a live
 heating system.
 
 ## Requirements
@@ -82,7 +82,7 @@ it performs no API requests or service calls and cannot write switching times.
 
 ### Upgrade from v0.1 and add the card
 
-1. Extract the v0.2 install ZIP and replace the existing
+1. Extract the v0.3 install ZIP and replace the existing
    `/config/custom_components/buderus_rc30` directory with its included directory.
    The new `www/buderus-rc30-schedule-card.js` file must be included. Existing
    config entries and API keys remain stored in Home Assistant.
@@ -94,7 +94,7 @@ it performs no API requests or service calls and cannot write switching times.
 4. Enter this URL and select **JavaScript module**:
 
    ```text
-   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.1
+   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
    ```
 
    For a YAML-managed resource list, use:
@@ -103,7 +103,7 @@ it performs no API requests or service calls and cannot write switching times.
    lovelace:
      resource_mode: yaml
      resources:
-       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.2.1
+       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
          type: module
    ```
 
@@ -144,7 +144,40 @@ your dashboard configuration.
   minutes displays a prominent warning and no current-time marker.
 - No external JavaScript, fonts or frameworks are downloaded. The card follows
   the Home Assistant theme, supports keyboard activation of weekday details and
-  has a maximum width of 600 px. A live dashboard visual check is still required.
+  has a maximum width of 600 px. The owner confirmed the v0.2 overview visually;
+  the new v0.3 draft controls still need a live dashboard check.
+
+## Local draft editor (v0.3)
+
+Choose **Schaltzeiten als Entwurf bearbeiten** below the timeline. The card copies
+the current complete schedule and marks the timeline as **Entwurfsvorschau**.
+The live sensor attributes and heating controller remain unchanged.
+
+- **+ Schaltpunkt** adds a day, time and heating/setback transition. Times must
+  use ten-minute increments; `24:00` is accepted. The next available physical
+  slot is used. At 42 occupied slots, additions are blocked until a slot is freed.
+- **Bearbeiten** changes an existing transition; **−** empties that physical slot
+  without renumbering any other point. The timeline and occupied/free count
+  update immediately within the draft.
+- **Rückgängig** restores the previous draft action (up to 42 recent actions).
+  The change preview compares each changed physical slot with the original data.
+- **Entwurf verwerfen** returns to the live view. A changed draft requires an
+  extra confirmation. Form cancellation keeps other draft edits.
+- Invalid values or conflicting opposite transitions at the same effective
+  weekday/time are rejected before changing the draft.
+
+Starting or changing a draft requires valid, recent source data and active
+`own 1`. If the gateway becomes unavailable, the poll is over 30 minutes old, the
+program becomes inactive or source slots change, editing pauses. The draft stays
+in memory. A new poll with identical slots does not invalidate it. If the actual
+source schedule changed, discard and restart the draft; no automatic merge is
+attempted. The original non-atomic firmware snapshot limitation still applies.
+
+Drafts exist **only in the current card instance**, not in Home Assistant storage,
+GitHub or the gateway. Browser reloads, card removal/recreation or navigation that
+recreates the card can discard them. They are not a backup. There is deliberately
+no transmit/save-to-heating action in this version. Use the draft to verify editing
+and the visual preview before implementing a separate, reviewed write failsafe.
 
 ## Polling and failure behavior
 
@@ -212,7 +245,7 @@ is test-only and leaves the production client and its validation unchanged.
 
 Before a future public Marketplace release: complete the live check, choose a
 license, make a deliberate visibility decision, validate with HACS, and create a
-versioned release. No public release or visibility change is performed by v0.2.
+versioned release. No public release or visibility change is performed by v0.3.
 
 ## Removal
 
@@ -220,12 +253,12 @@ Delete the integration from **Settings → Devices & services**, remove
 `/config/custom_components/buderus_rc30`, and restart Home Assistant. Revoke the
 gateway API key if it was created solely for this integration.
 
-## Scope after v0.1
+## Scope after v0.3
 
-The read-only graphical weekly overview is included in v0.2. The graphical editor,
-`+`/`−`, edit-capacity checks, change previews, backups and a separately designed
-write/restore failsafe remain future work. This release has no schedule-writing
-services or editing controls.
+The weekly overview and local draft editor are included. Actual transmission,
+persistent backups and a separately designed write/restore failsafe remain future
+work. The backend still accepts only the existing read selectors; no
+schedule-writing services are present.
 
 ## Protocol and packaging references
 

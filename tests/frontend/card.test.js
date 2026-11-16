@@ -14,7 +14,7 @@ const { BuderusRc30ScheduleCard } = await import(
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
-function render(
+function makeCard(
   { state = "2", active = "own 1", age = 0, title = "Wochenprogramm" } = {},
 ) {
   const card = new BuderusRc30ScheduleCard();
@@ -45,7 +45,11 @@ function render(
       },
     },
   };
-  return card.shadowRoot.innerHTML;
+  return card;
+}
+
+function render(options) {
+  return makeCard(options).shadowRoot.innerHTML;
 }
 
 Deno.test("fresh data produces seven accessible day rows and exact detail times", () => {
@@ -112,4 +116,118 @@ Deno.test("inconsistent count errors replace the whole timeline", () => {
   const html = render({ state: "38" });
   assert(html.includes('role="alert"'), "Bad-data error missing");
   assert(!html.includes('class="track"'), "Invalid schedule must not be drawn");
+});
+
+Deno.test("local add, edit, remove and undo keep the original sensor unchanged", () => {
+  const card = makeCard();
+  const source = JSON.stringify(card._hass.states);
+  card._handleAction("start");
+  assert(card._draft, "Draft should start");
+  card._handleAction("add");
+  card._pointForm = { index: null, day: "tu", time: "08:00", mode: "on" };
+  card._savePoint();
+  assert(card._draft.slots[2].day === "tu", "New point not added");
+  card._handleAction("edit", "02");
+  card._pointForm.time = "08:10";
+  card._savePoint();
+  assert(card._draft.slots[2].time === "08:10", "Point not edited");
+  card._handleAction("remove", "02");
+  assert(!card._draft.slots[2].occupied, "Point not removed");
+  card._handleAction("undo");
+  assert(card._draft.slots[2].time === "08:10", "Undo did not restore point");
+  assert(JSON.stringify(card._hass.states) === source, "Live data was mutated");
+  assert(
+    card.shadowRoot.innerHTML.includes("Entwurfsvorschau"),
+    "Draft must be labeled",
+  );
+  assert(
+    !card.shadowRoot.innerHTML.includes('class="now"'),
+    "Draft must not look live",
+  );
+});
+
+Deno.test("discard requires confirmation and cancel keeps the draft", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("remove", "00");
+  card._handleAction("discard");
+  assert(
+    card._confirmDiscard && card._draft,
+    "Changed draft requires confirmation",
+  );
+  card._handleAction("keep");
+  assert(!card._confirmDiscard && card._draft, "Cancel should keep edits");
+  card._handleAction("discard");
+  card._handleAction("confirm-discard");
+  assert(card._draft === null, "Draft not discarded");
+  assert(
+    card._hass.states["sensor.schedule"].attributes.slots[0].occupied,
+    "Source changed",
+  );
+});
+
+Deno.test("loss of connectivity preserves the draft and blocks further mutation", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("remove", "00");
+  const saved = JSON.stringify(card._draft);
+  card._hass.states["sensor.schedule"].state = "unavailable";
+  card._handleAction("remove", "01");
+  assert(
+    JSON.stringify(card._draft) === saved,
+    "Offline action changed the draft",
+  );
+  assert(
+    card.shadowRoot.innerHTML.includes("pausiert"),
+    "Paused status missing",
+  );
+  card._hass.states["sensor.schedule"].state = "2";
+  card._hass.states["sensor.schedule"].attributes.verified_at = new Date()
+    .toISOString();
+  card._handleAction("edit", "01");
+  assert(
+    card._pointForm.index === 1,
+    "Same-source recovery should allow editing",
+  );
+});
+
+Deno.test("a changed source blocks an open form's save and retains edits", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("edit", "00");
+  card._pointForm.time = "06:10";
+  card._hass.states["sensor.schedule"].attributes.slots[0].time = "06:20";
+  card._savePoint();
+  assert(card._draft.slots[0].time === "06:00", "Conflict save should fail");
+  assert(card._draftError.includes("geändert"), "Conflict explanation missing");
+  assert(
+    card._pointForm.time === "06:10",
+    "User form input should be retained",
+  );
+});
+
+Deno.test("unavailable, stale and inactive sources cannot start a draft", () => {
+  for (
+    const options of [{ state: "unavailable" }, { age: 31 * 60_000 }, {
+      active: "own 2",
+    }]
+  ) {
+    const card = makeCard(options);
+    card._handleAction("start");
+    assert(card._draft === null, "Invalid source started a draft");
+  }
+});
+
+Deno.test("invalid form input stays editable and never changes the draft", () => {
+  const card = makeCard();
+  card._handleAction("start");
+  card._handleAction("add");
+  card._pointForm.time = "06:35";
+  const before = JSON.stringify(card._draft);
+  card._savePoint();
+  assert(JSON.stringify(card._draft) === before, "Invalid time was applied");
+  assert(
+    card._pointForm && card._draftError,
+    "Form and validation error should remain",
+  );
 });
