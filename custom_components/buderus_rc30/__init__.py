@@ -8,25 +8,30 @@ from homeassistant.const import CONF_API_KEY, CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .api import EmsEspClient
+from .const import CARD_PATH, DOMAIN
 from .coordinator import Rc30Coordinator
+from .frontend import async_register_card
 
 PLATFORMS = [Platform.SENSOR]
 type Rc30ConfigEntry = ConfigEntry[Rc30Coordinator]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Serve only the bundled card module, once per integration setup."""
+    """Serve and register the bundled card, once per integration setup."""
     await hass.http.async_register_static_paths(
         [
             StaticPathConfig(
-                "/buderus_rc30/buderus-rc30-schedule-card.js",
+                CARD_PATH,
                 str(Path(__file__).parent / "www" / "buderus-rc30-schedule-card.js"),
                 False,
             )
         ]
     )
+    integration = await async_get_integration(hass, DOMAIN)
+    await async_register_card(hass, str(integration.version))
     return True
 
 

@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.4.0
+# Buderus RC30 Schedule — v0.4.1
 
 Read-only Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. It reads all **42 physical slots (00–41)** without
@@ -21,25 +21,27 @@ heating system.
   require write/command permission even though this integration only reads.
 - Network access from Home Assistant to the gateway.
 
-## Install while the repository is private
+## Install with HACS
 
-HACS does **not** support private repositories. This repository includes the
-standard `custom_components` layout, manifest, local icon and `hacs.json` for
-future public distribution, but it is not a published Marketplace integration.
-The repository remains private.
+The repository is public and can be added as a **custom integration repository**:
 
-1. Download the branch or the `buderus_rc30` artifact from a successful GitHub
-   Actions run. The artifact contains `buderus_rc30.zip`; extract that ZIP.
-2. Copy its `custom_components/buderus_rc30` directory to
-   `/config/custom_components/buderus_rc30` in Home Assistant. Do not nest an
-   extra `custom_components` directory inside the integration directory.
-3. Restart Home Assistant.
-4. Open **Settings → Devices & services → Add integration → Buderus RC30 Schedule**.
-5. Enter the gateway hostname (for example `ems-esp.local`) or HTTP(S) origin
-   (for example `http://ems-esp.local:8080`) and the API key. Do not include an
-   `/api` path or credentials in the address.
-6. Allow up to **three minutes** for the complete validation pass. Initial setup
-   performs its own full pass before creating entities.
+1. Open **HACS → three-dot menu → Custom repositories**.
+2. Add `https://github.com/jaal2001/ha-buderus-rc30` with type **Integration**.
+3. Download **Buderus RC30 Schedule** and restart Home Assistant.
+4. For a new installation, open **Settings → Devices & services → Add integration
+   → Buderus RC30 Schedule** and enter the hostname and API key. Existing config
+   entries remain configured when upgrading or switching from a manual install.
+5. Allow up to three minutes for initial schedule validation.
+6. Reload the browser. The bundled card is registered automatically in v0.4.1+;
+   no dashboard resource URL needs to be added or maintained.
+
+HACS manages subsequent downloads/updates. Restart Home Assistant and reload the
+browser after an update. Without releases, HACS uses the default branch; a change
+available only in an unmerged PR is not installed from `main` yet.
+
+For a manual installation, download the successful CI artifact or repository,
+copy `custom_components/buderus_rc30` to `/config/custom_components/buderus_rc30`,
+and restart Home Assistant. Do not nest an extra `custom_components` directory.
 
 Credentials are stored in Home Assistant's config entry storage. The password
 field masks the key but does not encrypt Home Assistant backups. Protect those
@@ -81,52 +83,35 @@ program and the timestamp of the last complete poll. Click a day timeline to ope
 with exact heating time ranges. The card uses the existing sensor attributes;
 it performs no API requests or service calls and cannot write switching times.
 
-### Upgrade from v0.1 and add the card
+### Upgrade and automatic card registration (v0.4.1+)
 
-1. Extract the v0.4 install ZIP and replace the existing
-   `/config/custom_components/buderus_rc30` directory with its included directory.
-   The new `www/buderus-rc30-schedule-card.js` file must be included. Existing
-   config entries and API keys remain stored in Home Assistant.
-2. Restart Home Assistant. Removing/re-adding the configured integration is not
-   necessary. The integration serves the single JavaScript file itself; you do
-   not need to copy files into `/config/www`.
-3. Enable **Advanced mode** in your Home Assistant user profile if necessary.
-   Open **Settings → Dashboards → three-dot menu → Resources → Add resource**.
-4. Enter this URL and select **JavaScript module**:
-
-   ```text
-   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.4.0
-   ```
-
-   For a YAML-managed resource list, use:
-
-   ```yaml
-   lovelace:
-     resource_mode: yaml
-     resources:
-       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.4.0
-         type: module
-   ```
-
-5. Reload the browser/dashboard. Edit the desired dashboard, choose **Add card**
-   and select **Buderus RC30 Wochenprogramm**. The visual editor lets you choose
-   the schedule sensor and an optional title. With exactly one schedule sensor,
-   it is detected automatically. No entity-ID guess is needed.
-6. Alternatively, add a **Manual** card with this complete configuration:
+1. Update the integration through HACS and restart Home Assistant. Existing
+   gateways, credentials, sensors and dashboard cards remain configured.
+2. Fully reload the browser. The integration registers its bundled JavaScript
+   module using Home Assistant's frontend API and the installed manifest version.
+   The URL version changes automatically on upgrades to avoid stale browser caches.
+3. Add **Buderus RC30 Wochenprogramm** in the dashboard card picker, or retain your
+   existing card. Its complete minimal configuration is:
 
    ```yaml
    type: custom:buderus-rc30-schedule-card
    ```
 
-   If multiple gateways are configured, select the intended sensor in the card
-   editor or specify its actual entity ID using the `entity` setting. The
-   optional `title` setting changes the heading.
+The card detects exactly one matching sensor automatically. With multiple gateways,
+select the intended sensor in the visual card editor or set `entity` to its actual
+entity ID. The optional `title` changes the heading.
 
-If the card is not listed, confirm the resource is a JavaScript module, check the
-URL for typos, and fully reload the browser. A 404 at the resource URL usually
-means the integration files were not replaced completely or Home Assistant was
-not restarted. Resource registration is manual; the integration does not change
-your dashboard configuration.
+Automatic registration works in both storage and YAML resource modes. It is a
+frontend module, so it does not need a manual entry in the dashboard **Resources**
+list. Old manual storage entries for this integration's exact local card path are
+removed to avoid loading multiple versioned URLs. Other resources and all YAML
+configuration files remain unchanged. Existing YAML resource entries may remain,
+but are no longer required for this card.
+
+If **Custom element not found** appears after upgrading, check that the integration
+is loaded, restart Home Assistant, then fully reload the browser. Also check the
+Home Assistant log for frontend/dependency setup errors. No file needs to be copied
+into `/config/www`, and no resource URL needs to be maintained manually.
 
 ### Interpretation and display limits
 
@@ -255,9 +240,10 @@ The HTTP test fixture supplies the new aiohttp 3.14 `stream_writer` constructor
 argument that aioresponses 0.7.9 does not yet provide. This compatibility adapter
 is test-only and leaves the production client and its validation unchanged.
 
-Before a future public Marketplace release: complete the live check, choose a
-license, make a deliberate visibility decision, validate with HACS, and create a
-versioned release. No public release or visibility change is performed by v0.4.
+Before broader Marketplace distribution: complete the live checks, choose a
+license, validate with HACS and prepare versioned releases. The public repository
+can already be used as a custom repository; no default-catalog submission or
+GitHub release is created by this change.
 
 ## Removal
 
