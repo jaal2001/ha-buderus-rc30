@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.3.0
+# Buderus RC30 Schedule — v0.4.0
 
 Read-only Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. It reads all **42 physical slots (00–41)** without
@@ -6,8 +6,9 @@ changing switching times, the selected program, temperatures or operating modes.
 
 The v0.1 read integration has been installed successfully by the project owner:
 all 42 slots and the expected occupied/free counts were confirmed. The weekly dashboard card has also been confirmed visually by the owner.
-Version 0.3 adds a local draft editor; its new controls still require a live
-dashboard acceptance check. Automated tests use synthetic data, not a live
+Version 0.4 replaces the long editor list with a day dialog opened from the
+existing horizontal timeline. Its new controls still require a live dashboard
+acceptance check. Automated tests use synthetic data, not a live
 heating system.
 
 ## Requirements
@@ -76,13 +77,13 @@ Example attribute entry (synthetic):
 
 The integration now includes `custom:buderus-rc30-schedule-card`. It shows seven
 daily timelines, heating/setback intervals, occupied/free slot counts, the active
-program and the timestamp of the last complete poll. Click a weekday to display
-its exact heating time ranges. The card uses the existing sensor attributes;
+program and the timestamp of the last complete poll. Click a day timeline to open its day editor
+with exact heating time ranges. The card uses the existing sensor attributes;
 it performs no API requests or service calls and cannot write switching times.
 
 ### Upgrade from v0.1 and add the card
 
-1. Extract the v0.3 install ZIP and replace the existing
+1. Extract the v0.4 install ZIP and replace the existing
    `/config/custom_components/buderus_rc30` directory with its included directory.
    The new `www/buderus-rc30-schedule-card.js` file must be included. Existing
    config entries and API keys remain stored in Home Assistant.
@@ -94,7 +95,7 @@ it performs no API requests or service calls and cannot write switching times.
 4. Enter this URL and select **JavaScript module**:
 
    ```text
-   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
+   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.4.0
    ```
 
    For a YAML-managed resource list, use:
@@ -103,7 +104,7 @@ it performs no API requests or service calls and cannot write switching times.
    lovelace:
      resource_mode: yaml
      resources:
-       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
+       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.4.0
          type: module
    ```
 
@@ -138,6 +139,8 @@ your dashboard configuration.
 - The current-day/time marker and poll timestamp use Home Assistant's configured
   timezone, including DST. The marker assumes the thermostat clock uses the same
   local timezone. Stored switching times are wall-clock values and are not shifted.
+  The current-time line remains visible in today's row while editing a draft;
+  the draft label still identifies the displayed periods as unsaved changes.
 - If another program is active, a warning identifies it while the card continues
   to show **own 1**. It does not infer the heating periods of another program.
 - Unavailable or invalid sensor data hides the timelines. Data older than 30
@@ -145,46 +148,48 @@ your dashboard configuration.
 - No external JavaScript, fonts or frameworks are downloaded. The card follows
   the Home Assistant theme, supports keyboard activation of weekday details and
   has a maximum width of 600 px. The owner confirmed the v0.2 overview visually;
-  the new v0.3 draft controls still need a live dashboard check.
+  the new v0.4 day-dialog controls still need a live dashboard check.
 
-## Local draft editor (v0.3)
+## Day dialog and local drafts (v0.4)
 
-Choose **Schaltzeiten als Entwurf bearbeiten** below the timeline. The card copies
-the current complete schedule and marks the timeline as **Entwurfsvorschau**.
-The live sensor attributes and heating controller remain unchanged.
+Click an existing horizontal day timeline to open that day's editor. The weekly
+layout is retained. The editor shows only the selected day's heating/setback
+ranges, a small day timeline and the current clock-time line. Day tabs let you
+move through the week; a dot identifies days with applied, unsaved changes.
 
-- **+ Schaltpunkt** adds a day, time and heating/setback transition. Times must
-  use ten-minute increments; `24:00` is accepted. The next available physical
-  slot is used. At 42 occupied slots, additions are blocked until a slot is freed.
-- **Bearbeiten** prepares a changed transition; **−** prepares removal of that
-  physical slot. **Apply** confirms each addition, edit or deletion into the
-  draft without renumbering any other point. The draft preview/count update only
-  after Apply. Apply performs no REST calls.
-- **Rückgängig** restores the previous draft action (up to 42 recent actions).
-  The change preview compares each changed physical slot with the original data.
-- **Cancel** returns to the live view after warning about unsaved changes.
-  Cancelling an individual form or switching to another point also warns before
-  dropping unconfirmed input. Other applied draft edits remain intact.
-- **Save** is shown disabled and explicitly marked unavailable until the separate
-  controller-transmission workflow is implemented. Apply is not a controller save.
-- Invalid values or conflicting opposite transitions at the same effective
-  weekday/time are rejected before changing the draft.
+- Click an orange range or its row to edit **Von** / **Bis** directly in that row.
+  **Apply** confirms both boundaries together into the local draft. Times use
+  ten-minute increments and allow an end of `24:00`.
+- Click a setback row or **+ Heizzeit** to prepare a new heating range. Overlaps
+  are rejected; touching heating ranges merge. At most 42 physical switch slots
+  may be occupied, including any midnight boundaries required by the edit.
+- **− Heizzeit** prepares removal of a range and also requires **Apply**.
+  **Rückgängig** restores up to 42 recent draft actions. An unchanged Apply creates
+  no additional undo entry.
+- Applied changes retain the selected day and dialog scroll position. **Wochenvorschau**
+  closes the dialog while preserving the applied draft for inspection in the
+  original week view. Clicking another day opens its editor.
+- **Cancel**, the close button and Escape warn before discarding pending input
+  or applied changes. Switching day/range also protects unconfirmed form input.
+- **Save** remains visibly disabled: controller transmission is not implemented.
+  Apply and day navigation perform no REST requests or Home Assistant service calls.
 
-Starting or changing a draft requires valid, recent source data and active
-`own 1`. If the gateway becomes unavailable, the poll is over 30 minutes old, the
-program becomes inactive or source slots change, editing pauses. The draft stays
-in memory. A new poll with identical slots does not invalidate it. If the actual
-source schedule changed, discard and restart the draft; no automatic merge is
-attempted. The original non-atomic firmware snapshot limitation still applies.
+Editing a day preserves the heating ranges of every other day. The draft updates
+its necessary physical switching points and, when required, a midnight transition
+that preserves the following day's original starting mode. A range crossing
+midnight is shown as portions on its two days; edit those days separately.
 
-Drafts exist **only in the current card instance**, not in Home Assistant storage,
-GitHub or the gateway. Browser reloads, card removal/recreation or navigation that
-recreates the card can discard them. The card requests the browser's standard
-unload confirmation for unsaved edits, but browsers may suppress it and Home
-Assistant navigation may not trigger a page unload. Use Cancel for the explicit
-in-card warning. Drafts are not a backup. There is deliberately
-no transmit/save-to-heating action in this version. Use the draft to verify editing
-and the visual preview before implementing a separate, reviewed write failsafe.
+Starting/editing requires valid, recent source data and active `own 1`. Unavailable
+or stale source data pauses edits while retaining the draft. Source changes require
+restarting the draft; a new poll timestamp with identical slots is accepted.
+The existing non-atomic firmware snapshot limitation still applies.
+
+Drafts exist only in the current card instance. They are not written to Home
+Assistant storage or the gateway. Cancel provides an explicit in-card warning;
+the card also requests the browser's standard unload warning, which a browser
+may suppress and which Home Assistant navigation may not trigger. Card recreation,
+page reload or navigation can discard the in-memory draft. It is not a backup.
+The new dialog requires visual/click acceptance testing in the user's dashboard.
 
 ## Polling and failure behavior
 
@@ -252,7 +257,7 @@ is test-only and leaves the production client and its validation unchanged.
 
 Before a future public Marketplace release: complete the live check, choose a
 license, make a deliberate visibility decision, validate with HACS, and create a
-versioned release. No public release or visibility change is performed by v0.3.
+versioned release. No public release or visibility change is performed by v0.4.
 
 ## Removal
 
@@ -260,9 +265,9 @@ Delete the integration from **Settings → Devices & services**, remove
 `/config/custom_components/buderus_rc30`, and restart Home Assistant. Revoke the
 gateway API key if it was created solely for this integration.
 
-## Scope after v0.3
+## Scope after v0.4
 
-The weekly overview and local draft editor are included. Actual transmission,
+The horizontal weekly overview and day-based draft dialog are included. Actual transmission,
 persistent backups and a separately designed write/restore failsafe remain future
 work. The backend still accepts only the existing read selectors; no
 schedule-writing services are present.

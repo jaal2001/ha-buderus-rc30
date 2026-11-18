@@ -206,6 +206,162 @@ export function changeDraft(draft, index, point) {
   return result;
 }
 
+/** Return continuous heating ranges for a day, including inherited overnight mode. */
+export function dayHeatingPeriods(draft, dayIndex) {
+  if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6) {
+    throw new Error("Ungültiger Tag.");
+  }
+  const attrs = draftAttributes(draft);
+  const day = buildWeek(attrs, String(42 - attrs.free_slots)).days[dayIndex];
+  const periods = [];
+  for (const interval of day?.intervals ?? []) {
+    if (interval.mode !== "on") continue;
+    const previous = periods.at(-1);
+    if (previous?.end === interval.start) previous.end = interval.end;
+    else periods.push({ start: interval.start, end: interval.end });
+  }
+  return periods;
+}
+
+function parseMinute(value) {
+  if (typeof value !== "string" || !/^[0-9]{2}:[0-9]{2}$/.test(value)) {
+    throw new Error("Bitte eine Uhrzeit als HH:MM eingeben.");
+  }
+  const [hour, minute] = value.split(":").map(Number);
+  if (hour > 24 || minute > 59 || minute % 10 || (hour === 24 && minute)) {
+    throw new Error(
+      "Bitte 10-Minuten-Schritte zwischen 00:00 und 24:00 verwenden.",
+    );
+  }
+  return hour * 60 + minute;
+}
+
+/** Rebuild only the selected day's transitions and its midnight boundary. */
+export function changeDraftPeriod(draft, dayIndex, periodIndex, from, to) {
+  const original = dayHeatingPeriods(draft, dayIndex);
+  const periods = original.map((period) => ({ ...period }));
+  if (
+    periodIndex !== null &&
+    (!Number.isInteger(periodIndex) || !periods[periodIndex])
+  ) throw new Error("Zeitraum nicht gefunden.");
+  if (from === null && to === null) {
+    if (periodIndex === null) throw new Error("Kein Zeitraum ausgewählt.");
+    periods.splice(periodIndex, 1);
+  } else {
+    const period = { start: parseMinute(from), end: parseMinute(to) };
+    if (period.start >= period.end) {
+      throw new Error(
+        "Das Ende muss nach dem Beginn liegen. Über Mitternacht bitte beide Tage bearbeiten.",
+      );
+    }
+    if (periodIndex === null) periods.push(period);
+    else periods[periodIndex] = period;
+  }
+  periods.sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const period of periods) {
+    const previous = merged.at(-1);
+    if (previous && previous.end > period.start) {
+      throw new Error("Heizzeiten dürfen sich nicht überschneiden.");
+    }
+    if (previous?.end === period.start) previous.end = period.end;
+    else merged.push({ ...period });
+  }
+  if (JSON.stringify(original) === JSON.stringify(merged)) return draft;
+  const attrs = draftAttributes(draft);
+  const before = buildWeek(attrs, String(42 - attrs.free_slots));
+  const previousMode =
+    before.days[(dayIndex + 6) % 7]?.intervals.at(-1)?.mode ?? "off";
+  const followingMode = before.days[(dayIndex + 1) % 7]?.intervals[0]?.mode ??
+    "off";
+  const start = dayIndex * DAY_MINUTES;
+  const nextStart = (start + DAY_MINUTES) % WEEK_MINUTES;
+  const effectiveMinute = (slot) => {
+    const [hour, minute] = slot.time.split(":").map(Number);
+    return (DAYS.indexOf(slot.day) * DAY_MINUTES + hour * 60 + minute) %
+      WEEK_MINUTES;
+  };
+  const existingBoundary = (minute, mode) =>
+    draft.slots.some((slot) =>
+      slot.occupied && effectiveMinute(slot) === minute && slot.mode === mode
+    );
+  const desired = new Map();
+  const firstMode = merged[0]?.start === 0 ? "on" : "off";
+  const lastMode = merged.at(-1)?.end === DAY_MINUTES ? "on" : "off";
+  if (previousMode !== firstMode || existingBoundary(start, firstMode)) {
+    desired.set(start, firstMode);
+  }
+  for (const period of merged) {
+    if (period.start > 0) desired.set(start + period.start, "on");
+    if (period.end < DAY_MINUTES) desired.set(start + period.end, "off");
+  }
+  if (
+    lastMode !== followingMode || existingBoundary(nextStart, followingMode)
+  ) {
+    desired.set(nextStart, followingMode);
+  }
+  const slots = draft.slots.map((slot) => {
+    if (!slot.occupied) return { ...slot };
+    const minute = effectiveMinute(slot);
+    if (
+      (minute >= start && minute < start + DAY_MINUTES) || minute === nextStart
+    ) {
+      if (desired.get(minute) !== slot.mode) {
+        return {
+          slot: slot.slot,
+          occupied: false,
+          day: null,
+          time: null,
+          mode: null,
+        };
+      }
+    }
+    return { ...slot };
+  });
+  for (const [minute, mode] of desired) {
+    if (
+      slots.some((slot) =>
+        slot.occupied && effectiveMinute(slot) === minute && slot.mode === mode
+      )
+    ) continue;
+    const empty = slots.filter((slot) =>
+      !slot.occupied
+    ).sort((a, b) => Number(a.slot) - Number(b.slot))[0];
+    if (!empty) {
+      throw new Error(
+        "Für diesen Zeitraum reichen die 42 Slots nicht aus. Bitte zuerst einen Zeitraum entfernen.",
+      );
+    }
+    Object.assign(empty, {
+      occupied: true,
+      day: DAYS[Math.floor(minute / DAY_MINUTES)],
+      time: formatMinute(minute % DAY_MINUTES),
+      mode,
+    });
+  }
+  const result = { ...draft, slots };
+  const afterAttrs = draftAttributes(result);
+  buildWeek(afterAttrs, String(42 - afterAttrs.free_slots));
+  if (
+    JSON.stringify(dayHeatingPeriods(result, dayIndex)) !==
+      JSON.stringify(merged)
+  ) {
+    throw new Error(
+      "Die Tagesvorschau konnte nicht eindeutig erstellt werden.",
+    );
+  }
+  if (before.days.length) {
+    for (let day = 0; day < 7; day++) {
+      if (
+        day !== dayIndex &&
+        JSON.stringify(dayHeatingPeriods(draft, day)) !==
+          JSON.stringify(dayHeatingPeriods(result, day))
+      ) throw new Error("Die Änderung würde einen anderen Tag beeinflussen.");
+    }
+  }
+  return result;
+}
+
 export function draftChanges(draft) {
   return draft.slots.flatMap((slot) => {
     const before = draft.base.slots.find((original) =>
@@ -319,10 +475,6 @@ const CSS = `
   .action:focus-visible { outline:2px solid var(--primary-color,#1673ad); outline-offset:3px; }
   .draft-area { border-top:1px solid var(--divider-color,#dfe5e9); margin-top:20px; padding-top:18px; }
   h3 { font-size:16px; margin:0 0 10px; }
-  .point-list { list-style:none; padding:0; margin:14px 0; max-height:310px; overflow:auto; }
-  .point-row { display:flex; align-items:center; gap:7px; padding:8px 0; border-bottom:1px solid var(--divider-color,#dfe5e9); }
-  .point-label { flex:1; font-size:12px; }
-  .point-row .action { padding:7px 9px; }
   .point-form { padding:14px; margin:14px 0; background:var(--rc30-track); border-radius:10px; }
   .fields { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
   .fields label { font-size:11px; }
@@ -331,6 +483,31 @@ const CSS = `
     background:var(--card-background-color,#fff); color:var(--primary-text-color,#20262b); }
   .changes { margin:14px 0; padding-left:20px; font-size:12px; line-height:1.8; }
   .draft-error { color:var(--error-color,#b33b35); font-size:12px; line-height:1.6; }
+  .day-dialog { width:min(740px,calc(100vw - 32px)); max-height:calc(100dvh - 32px);
+    padding:0; border:1px solid var(--divider-color,#dfe5e9); border-radius:22px;
+    background:var(--ha-card-background,var(--card-background-color,#fff)); color:var(--primary-text-color,#20262b); }
+  .day-dialog::backdrop { background:rgba(0,0,0,.4); }
+  .dialog-shell { display:flex; flex-direction:column; max-height:calc(100dvh - 36px); }
+  .dialog-header { padding:20px 24px 12px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .dialog-header h2 { font-size:21px; }
+  .dialog-body { overflow-y:auto; padding:8px 24px 22px; min-height:0; }
+  .day-tabs { display:flex; gap:5px; flex-wrap:wrap; margin:12px 0 22px; }
+  .day-tab { flex:1; min-width:42px; padding:10px 5px; }
+  .day-tab[aria-pressed="true"] { background:var(--primary-color,#1673ad); color:var(--text-primary-color,#fff); }
+  .dialog-track { position:relative; height:32px; border-radius:7px; background:var(--rc30-track); overflow:hidden; margin:10px 0 20px; }
+  .dialog-track .segment { border:0; cursor:pointer; padding:0; }
+  .dialog-track .now { pointer-events:none; }
+  .period-row { display:flex; align-items:center; justify-content:space-between; gap:12px;
+    width:100%; padding:15px 12px; border:0; border-bottom:1px solid var(--divider-color,#dfe5e9);
+    background:transparent; color:inherit; font:inherit; font-size:14px; cursor:pointer; text-align:left; }
+  .period-row:hover { background:var(--rc30-track); }
+  .period-row .phase { font-size:12px; color:var(--secondary-text-color,#64717a); }
+  .period-row .phase.on { color:var(--rc30-on); }
+  .period-form .fields { grid-template-columns:1fr 1fr; }
+  .dialog-footer { padding:14px 24px 18px; border-top:1px solid var(--divider-color,#dfe5e9); background:inherit; }
+  .dialog-footer .toolbar { margin-top:0; justify-content:flex-end; }
+  .dialog-status { margin:10px 0; font-size:12px; color:var(--secondary-text-color,#64717a); }
+  .day-dialog .point-form { margin:0; border-radius:8px; }
   @media (max-width:380px) { .body { padding:18px 14px; } h2 { font-size:21px; }
     .meta { font-size:11px; } .footer { flex-direction:column; gap:5px; } }
 `;
@@ -342,8 +519,8 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._expanded = new Set();
     this._draft = null;
+    this._dialogDay = null;
     this._history = [];
     this._beforeUnload = (event) => {
       if (!this._hasUnsavedChanges()) return;
@@ -359,11 +536,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       const button = event.target.closest?.("button[data-day]");
       if (!button) return;
       const day = Number(button.dataset.day);
-      const open = !this._expanded.has(day);
-      if (open) this._expanded.add(day);
-      else this._expanded.delete(day);
-      button.setAttribute("aria-expanded", String(open));
-      this.shadowRoot.getElementById(`details-${day}`).hidden = !open;
+      this._handleAction("day", String(day));
     });
     this.shadowRoot.addEventListener("input", (event) => {
       const field = event.target.dataset.pointField;
@@ -373,6 +546,16 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       event.preventDefault();
       this._applyPoint();
     });
+    this.shadowRoot.addEventListener("cancel", (event) => {
+      if (!event.target.matches?.("dialog.day-dialog")) return;
+      event.preventDefault();
+      this._handleAction("discard");
+    }, true);
+    this.shadowRoot.addEventListener("toggle", (event) => {
+      if (event.target.matches?.("details[data-changes]")) {
+        this._changesOpen = event.target.open;
+      }
+    }, true);
   }
 
   setConfig(config) {
@@ -419,7 +602,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   getCardSize() {
-    return 12 + this._expanded.size * 2 + (this._draft ? 14 : 0);
+    return 12 + (this._draft ? 4 : 0);
   }
   getGridOptions() {
     return { columns: 12, rows: "auto", min_columns: 6 };
@@ -438,6 +621,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   _render() {
     if (!this._config || !this._hass) return;
     let content;
+    let dialogBlocked = null;
     try {
       this._entity = resolveEntity(this._hass.states, this._config.entity);
       const entity = this._hass.states[this._entity];
@@ -453,6 +637,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       const blocked = this._draft && this._draftEntity !== this._entity
         ? "Der Programmsensor hat gewechselt. Bitte den Entwurf verwerfen."
         : draftBlockReason(entity, this._draft);
+      dialogBlocked = blocked;
       const preview = this._draft ? draftAttributes(this._draft) : null;
       const week = preview
         ? buildWeek(preview, String(42 - preview.free_slots))
@@ -505,7 +690,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }
         ${
         week.days.length
-          ? this._weekMarkup(week, stale || this._draft ? null : clock)
+          ? this._weekMarkup(week, stale ? null : clock)
           : '<p class="notice">Keine Schaltpunkte vorhanden. Daraus lässt sich keine Heizphase ableiten.</p>'
       }
         <div class="footer"><span>${week.occupied} / 42 Slots belegt · ${
@@ -517,11 +702,13 @@ export class BuderusRc30ScheduleCard extends ElementBase {
           ? this._draftPanel(blocked)
           : `<div class="toolbar"><button class="action" type="button" data-action="start" ${
             blocked ? "disabled" : ""
-          }>Schaltzeiten als Entwurf bearbeiten</button></div>${
+          }>Heizzeiten bearbeiten</button></div>${
             blocked ? `<p class="hint">${escapeHtml(blocked)}</p>` : ""
           }`
       }`;
     } catch (error) {
+      dialogBlocked =
+        "Live-Daten fehlen. Die Bearbeitung ist pausiert; dein Entwurf bleibt erhalten.";
       content = `<p class="error" role="alert">${
         escapeHtml(error.message)
       }</p>${
@@ -534,6 +721,14 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }
     const focusedDay = this.shadowRoot.activeElement?.dataset.day;
     const focusedField = this.shadowRoot.activeElement?.dataset.pointField;
+    const bodyScroll =
+      this.shadowRoot.querySelector?.(".dialog-body")?.scrollTop ?? 0;
+    const confirmation = Boolean(
+      this._confirmDiscard || this._confirmPointCancel,
+    );
+    if (confirmation && !this._wasConfirming) this._warningScroll = bodyScroll;
+    const selectionStart = this.shadowRoot.activeElement?.selectionStart;
+    const selectionEnd = this.shadowRoot.activeElement?.selectionEnd;
     this.shadowRoot.innerHTML =
       `<style>${CSS}</style><ha-card><div class="body">
       <p class="eyebrow">Buderus RC30 · Heizkreis 1</p>
@@ -542,14 +737,40 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }</h2>
         <span class="badge">${
         this._draft ? "Entwurf" : "Nur Lesen"
-      }</span></div>${content}</div></ha-card>`;
+      }</span></div>${content}</div></ha-card>${
+        this._draft && this._dialogDay !== null
+          ? this._dayDialogMarkup(dialogBlocked)
+          : ""
+      }`;
+    const dialog = this.shadowRoot.querySelector?.("dialog.day-dialog");
+    if (dialog && !dialog.open && this.isConnected) dialog.showModal();
+    const dialogBody = this.shadowRoot.querySelector?.(".dialog-body");
+    if (dialogBody) {
+      dialogBody.scrollTop = confirmation
+        ? 0
+        : this._lastDialogDay !== this._dialogDay
+        ? 0
+        : this._wasConfirming
+        ? this._warningScroll ?? bodyScroll
+        : bodyScroll;
+    }
+    this._lastDialogDay = this._dialogDay;
+    this._wasConfirming = confirmation;
     if (focusedDay !== undefined) {
       this.shadowRoot.querySelector(`button[data-day="${Number(focusedDay)}"]`)
         ?.focus({ preventScroll: true });
     }
-    if (focusedField && ["day", "time", "mode"].includes(focusedField)) {
-      this.shadowRoot.querySelector(`[data-point-field="${focusedField}"]`)
-        ?.focus({ preventScroll: true });
+    if (
+      focusedField &&
+      ["day", "time", "mode", "from", "to"].includes(focusedField)
+    ) {
+      const input = this.shadowRoot.querySelector(
+        `[data-point-field="${focusedField}"]`,
+      );
+      input?.focus({ preventScroll: true });
+      if (input?.tagName === "INPUT" && typeof selectionStart === "number") {
+        input.setSelectionRange(selectionStart, selectionEnd);
+      }
     }
   }
 
@@ -560,7 +781,15 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   _handleAction(action, index) {
     this._draftError = null;
     if (
-      ["add", "edit", "remove", "undo"].includes(action) &&
+      [
+        "start",
+        "undo",
+        "day",
+        "period-edit",
+        "period-add",
+        "period-remove",
+        "preview",
+      ].includes(action) &&
       this._pointFormDirty()
     ) {
       this._pendingAction = { action, index };
@@ -589,45 +818,73 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         this._handleAction(pending.action, pending.index);
         return;
       }
+    } else if (action === "preview") {
+      this._dialogDay = null;
+      this._pointForm = null;
     } else {
       try {
         const blocked = draftBlockReason(this._currentEntity(), this._draft);
-        if (blocked) throw new Error(blocked);
-        if (action === "start") {
+        if (blocked && !(action === "day" && this._draft)) {
+          throw new Error(blocked);
+        }
+        if ((action === "start" || action === "day") && !this._draft) {
           this._draft = createDraft(
             this._currentEntity().attributes,
             this._currentEntity().state,
           );
           this._draftEntity = this._entity;
           this._history = [];
-        } else if (this._draft && this._draftEntity === this._entity) {
-          if (action === "add") {
-            if (draftAttributes(this._draft).free_slots === 0) {
-              throw new Error("Alle 42 Slots sind belegt.");
+        }
+        if (this._draft && this._draftEntity === this._entity) {
+          if (action === "start" || action === "day") {
+            const day = action === "day" ? Number(index) : localClock(
+              new Date(),
+              this._hass.config?.time_zone ?? "Europe/Berlin",
+            ).day;
+            if (!Number.isInteger(day) || day < 0 || day > 6) {
+              throw new Error("Ungültiger Tag.");
             }
-            this._pointForm = {
-              index: null,
-              day: "mo",
-              time: "06:00",
-              mode: "on",
-            };
-          } else if (action === "edit") {
-            const slot = this._draft.slots.find((slot) =>
-              slot.slot === index && slot.occupied
-            );
-            if (!slot) throw new Error("Schaltpunkt nicht gefunden.");
-            this._pointForm = {
-              index: Number(index),
-              day: slot.day,
-              time: slot.time,
-              mode: slot.mode,
-            };
-          } else if (action === "remove") {
-            const slot = this._draft.slots.find((slot) =>
-              slot.slot === index && slot.occupied
-            );
-            if (!slot) throw new Error("Schaltpunkt nicht gefunden.");
-            this._pointForm = { ...slot, index: Number(index), kind: "delete" };
+            this._dialogDay = day;
+            this._pointForm = null;
+          } else if (
+            ["period-edit", "period-add", "period-remove"].includes(action)
+          ) {
+            const periods = dayHeatingPeriods(this._draft, this._dialogDay);
+            if (action === "period-add") {
+              const attrs = draftAttributes(this._draft);
+              const intervals = buildWeek(attrs, String(42 - attrs.free_slots))
+                .days[this._dialogDay]?.intervals ??
+                [{ start: 0, end: 1440, mode: "off" }];
+              const gapIndex = index === undefined
+                ? intervals.findIndex((period) => period.mode === "off")
+                : Number(index);
+              const gap = intervals[gapIndex];
+              if (!gap || gap.mode !== "off") {
+                throw new Error(
+                  "Dieser Tag ist bereits vollständig mit Heizzeiten belegt.",
+                );
+              }
+              this._pointForm = {
+                kind: "period",
+                periodIndex: null,
+                dayIndex: this._dialogDay,
+                gapIndex,
+                from: formatMinute(gap.start),
+                to: formatMinute(gap.end),
+              };
+            } else {
+              const period = periods[Number(index)];
+              if (!period) throw new Error("Zeitraum nicht gefunden.");
+              this._pointForm = {
+                kind: action === "period-remove" ? "delete-period" : "period",
+                periodIndex: Number(index),
+                dayIndex: this._dialogDay,
+                from: formatMinute(period.start),
+                to: formatMinute(period.end),
+                originalFrom: formatMinute(period.start),
+                originalTo: formatMinute(period.end),
+              };
+            }
           } else if (action === "undo" && this._history.length) {
             this._draft = this._history.pop();
             this._pointForm = null;
@@ -641,6 +898,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   _remember(next) {
+    if (next === this._draft) return;
     this._history.push(this._draft);
     if (this._history.length > 42) this._history.shift();
     this._draft = next;
@@ -654,20 +912,18 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     this._draftError = null;
     this._confirmPointCancel = false;
     this._pendingAction = null;
+    this._dialogDay = null;
   }
 
   _pointFormDirty() {
     if (!this._pointForm) return false;
-    if (this._pointForm.index === null || this._pointForm.kind === "delete") {
-      return true;
+    if (this._pointForm.kind === "delete-period") return true;
+    if (this._pointForm.kind === "period") {
+      return this._pointForm.periodIndex === null ||
+        this._pointForm.from !== this._pointForm.originalFrom ||
+        this._pointForm.to !== this._pointForm.originalTo;
     }
-    const before = this._draft?.slots.find((slot) =>
-      Number(slot.slot) === this._pointForm.index
-    );
-    return !before ||
-      ["day", "time", "mode"].some((key) =>
-        before[key] !== this._pointForm[key]
-      );
+    return false;
   }
 
   _hasUnsavedChanges() {
@@ -684,13 +940,16 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       ) return;
       const blocked = draftBlockReason(this._currentEntity(), this._draft);
       if (blocked) throw new Error(blocked);
-      this._remember(
-        changeDraft(
-          this._draft,
-          this._pointForm.index,
-          this._pointForm.kind === "delete" ? null : this._pointForm,
-        ),
-      );
+      if (!["period", "delete-period"].includes(this._pointForm.kind)) {
+        throw new Error("Ungültige Zeitraum-Eingabe.");
+      }
+      this._remember(changeDraftPeriod(
+        this._draft,
+        this._pointForm.dayIndex,
+        this._pointForm.periodIndex,
+        this._pointForm.kind === "delete-period" ? null : this._pointForm.from,
+        this._pointForm.kind === "delete-period" ? null : this._pointForm.to,
+      ));
       this._pointForm = null;
       this._draftError = null;
       this._confirmPointCancel = false;
@@ -709,32 +968,8 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       : "leer";
   }
 
-  _draftPanel(blocked) {
-    const attrs = draftAttributes(this._draft);
-    const changes = draftChanges(this._draft);
-    const disabled = blocked ? "disabled" : "";
-    const points = this._draft.slots.filter((slot) => slot.occupied).sort((
-      a,
-      b,
-    ) =>
-      DAYS.indexOf(a.day) - DAYS.indexOf(b.day) ||
-      a.time.localeCompare(b.time) || Number(a.slot) - Number(b.slot)
-    );
-    return `<section class="draft-area" aria-label="Schaltzeitenentwurf">
-      <h3>Schaltpunkte bearbeiten</h3>
-      <p class="hint">Entwurf nur in diesem Browser-Tab. Neuladen verwirft ihn. Eine Übertragung an die Heizung ist in dieser Version nicht möglich.</p>
-      ${
-      blocked
-        ? `<p class="notice" role="status">${escapeHtml(blocked)}</p>`
-        : ""
-    }
-      <div class="toolbar"><button class="action primary" type="button" data-action="add" ${
-      blocked || attrs.free_slots === 0 ? "disabled" : ""
-    }>+ Schaltpunkt</button>
-        <button class="action" type="button" data-action="undo" ${
-      blocked || !this._history.length ? "disabled" : ""
-    }>Rückgängig</button></div>
-      ${
+  _draftMessages() {
+    return `${
       this._confirmDiscard
         ? `<p class="notice" role="alert">Ungespeicherte Änderungen verwerfen? Sie werden nicht gespeichert.</p><div class="toolbar"><button class="action" type="button" data-action="confirm-discard">Änderungen verwerfen</button><button class="action" type="button" data-action="keep">Weiter bearbeiten</button></div>`
         : ""
@@ -746,27 +981,27 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         }</p>`
         : ""
     }
-      ${this._pointForm ? this._pointFormMarkup(disabled) : ""}
       ${
       this._confirmPointCancel
         ? `<p class="notice" role="alert">Diese Eingabe wurde noch nicht mit Apply bestätigt. Eingabe verwerfen?</p><div class="toolbar"><button class="action" type="button" data-action="discard-point">Eingabe verwerfen</button><button class="action" type="button" data-action="keep-point">Weiter bearbeiten</button></div>`
         : ""
-    }
-      <ul class="point-list">${
-      points.map((slot) =>
-        `<li class="point-row"><span class="point-label">${
-          escapeHtml(this._pointLabel(slot))
-        }</span>
-        <button class="action" type="button" data-action="edit" data-index="${slot.slot}" aria-label="Bearbeiten: ${
-          escapeHtml(this._pointLabel(slot))
-        }" ${disabled}>Bearbeiten</button>
-        <button class="action" type="button" data-action="remove" data-index="${slot.slot}" aria-label="Löschen: ${
-          escapeHtml(this._pointLabel(slot))
-        }" ${disabled}>−</button></li>`
-      ).join("")
-    }</ul>
-      <h3>Änderungsvorschau · ${changes.length}</h3>
+    }`;
+  }
+
+  _draftPanel(blocked) {
+    const changes = draftChanges(this._draft);
+    return `<section class="draft-area" aria-label="Schaltzeitenentwurf">
+      <p class="hint">Tagesbalken anklicken, um Heizzeiten im Tagesdialog zu bearbeiten. Apply ändert nur den Entwurf.</p>
       ${
+      blocked
+        ? `<p class="notice" role="status">${escapeHtml(blocked)}</p>`
+        : ""
+    }
+      ${this._dialogDay === null ? this._draftMessages() : ""}
+      <details data-changes ${
+      this._changesOpen ? "open" : ""
+    }><summary>Ungespeicherte Änderungen · ${changes.length}</summary>
+        ${
       changes.length
         ? `<ul class="changes">${
           changes.map(({ before, after }) =>
@@ -777,38 +1012,150 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         }</ul>`
         : '<p class="hint">Noch keine Änderungen.</p>'
     }
-      <div class="toolbar"><button class="action" type="button" data-action="discard">Cancel</button><button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div>
-      <p class="hint">Apply bestätigt nur den Entwurf. Save ist noch nicht verfügbar: Die abgesicherte Übertragung an die Heizung folgt separat.</p>
+      </details>
+      <div class="toolbar"><button class="action" type="button" data-action="start">Tag bearbeiten</button>
+        <button class="action" type="button" data-action="undo" ${
+      blocked || !this._history.length ? "disabled" : ""
+    }>Rückgängig</button>
+        <button class="action" type="button" data-action="discard">Cancel</button>
+        <button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div>
+      <p class="hint">Save ist noch nicht verfügbar: Die abgesicherte Übertragung an die Heizung folgt separat.</p>
     </section>`;
   }
 
-  _pointFormMarkup(disabled) {
-    const point = this._pointForm;
-    if (point.kind === "delete") {
-      return `<form class="point-form"><h3>Schaltpunkt entfernen</h3><p>${
-        escapeHtml(this._pointLabel(point))
-      }</p><p class="hint">Apply entfernt diesen Schaltpunkt nur aus dem Entwurf.</p><div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button></div></form>`;
-    }
-    return `<form class="point-form"><h3>${
-      point.index === null ? "Neuer Schaltpunkt" : "Schaltpunkt ändern"
-    }</h3><div class="fields">
-      <label>Tag<select data-point-field="day" ${disabled}>${
-      DAYS.map((day, i) =>
-        `<option value="${day}" ${point.day === day ? "selected" : ""}>${
-          LABELS[i]
-        }</option>`
+  _dayDialogMarkup(blocked) {
+    const day = this._dialogDay;
+    const attrs = draftAttributes(this._draft);
+    const week = buildWeek(attrs, String(42 - attrs.free_slots));
+    const intervals = week.days[day]?.intervals ??
+      [{ start: 0, end: 1440, mode: "off" }];
+    const periods = dayHeatingPeriods(this._draft, day);
+    const baseDraft = { ...this._draft, slots: this._draft.base.slots };
+    const clock = localClock(
+      new Date(),
+      this._hass.config?.time_zone ?? "Europe/Berlin",
+    );
+    const disabled = blocked || this._confirmDiscard || this._confirmPointCancel
+      ? "disabled"
+      : "";
+    const dirtyDays = DAYS.map((_, index) =>
+      JSON.stringify(dayHeatingPeriods(baseDraft, index)) !==
+        JSON.stringify(dayHeatingPeriods(this._draft, index))
+    );
+    let heatingIndex = -1;
+    const rows = intervals.map((interval, intervalIndex) => {
+      // Merge consecutive on transitions into a single editable heating range.
+      if (interval.mode === "on") {
+        const periodIndex = periods.findIndex((period) =>
+          period.start <= interval.start && period.end >= interval.end
+        );
+        if (periodIndex === heatingIndex) return "";
+        heatingIndex = periodIndex;
+        const period = periods[periodIndex];
+        if (
+          this._pointForm?.dayIndex === day &&
+          this._pointForm.periodIndex === periodIndex &&
+          ["period", "delete-period"].includes(this._pointForm.kind)
+        ) return this._periodFormMarkup(disabled);
+        return `<button class="period-row" type="button" data-action="period-edit" data-index="${periodIndex}" ${disabled} aria-label="Heizzeit ${
+          formatMinute(period.start)
+        } bis ${formatMinute(period.end)} bearbeiten"><span>${
+          formatMinute(period.start)
+        } – ${
+          formatMinute(period.end)
+        }</span><span class="phase on">Heizzeit · Bearbeiten</span></button>`;
+      }
+      if (
+        this._pointForm?.dayIndex === day &&
+        this._pointForm.periodIndex === null &&
+        this._pointForm.gapIndex === intervalIndex
+      ) return this._periodFormMarkup(disabled);
+      return `<button class="period-row" type="button" data-action="period-add" data-index="${intervalIndex}" ${disabled} aria-label="Heizzeit im Bereich ${
+        formatMinute(interval.start)
+      } bis ${formatMinute(interval.end)} hinzufügen"><span>${
+        formatMinute(interval.start)
+      } – ${
+        formatMinute(interval.end)
+      }</span><span class="phase">Absenkzeit · + Heizzeit</span></button>`;
+    }).join("");
+    return `<dialog class="day-dialog" aria-labelledby="rc30-day-title"><div class="dialog-shell">
+      <header class="dialog-header"><h2 id="rc30-day-title">${
+      LABELS[day]
+    } · Heizzeiten</h2><button class="action" type="button" data-action="discard" aria-label="Editor schließen">✕</button></header>
+      <div class="dialog-body"><div class="day-tabs" aria-label="Wochentag">${
+      DAYS.map((_, index) =>
+        `<button class="action day-tab" type="button" data-action="day" data-index="${index}" aria-pressed="${
+          day === index
+        }" aria-label="${LABELS[index]}${
+          dirtyDays[index] ? ", ungespeicherte Änderungen" : ""
+        }">${LABELS[index].slice(0, 2)}${dirtyDays[index] ? " •" : ""}</button>`
       ).join("")
-    }</select></label>
-      <label>Uhrzeit<input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" data-point-field="time" value="${
-      escapeHtml(point.time)
-    }" required ${disabled}></label>
-      <label>Phase<select data-point-field="mode" ${disabled}><option value="on" ${
-      point.mode === "on" ? "selected" : ""
-    }>Heizzeit</option><option value="off" ${
-      point.mode === "off" ? "selected" : ""
-    }>Absenkzeit</option></select></label>
-      </div><p class="hint">10-Minuten-Schritte; 24:00 ist möglich.</p>
-      <div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button></div></form>`;
+    }</div>
+        <p class="hint">Entwurf · own 1 · ${
+      42 - attrs.free_slots
+    }/42 Slots belegt. Änderungen werden noch nicht an die Heizung übertragen.</p>
+        ${
+      blocked
+        ? `<p class="notice" role="status">${escapeHtml(blocked)}</p>`
+        : ""
+    }
+        <div class="dialog-status">Aktuelle Uhrzeit: ${
+      formatMinute(clock.minute)
+    }</div>
+        <div class="scale" style="margin-left:0" aria-hidden="true">${
+      [0, 6, 12, 18, 24].map((hour) =>
+        `<span class="tick" style="left:${hour / 24 * 100}%">${
+          String(hour).padStart(2, "0")
+        }</span>`
+      ).join("")
+    }</div>
+        <div class="dialog-track" aria-label="Tagesvorschau">${
+      periods.map((period, index) =>
+        `<button type="button" class="segment" data-action="period-edit" data-index="${index}" ${disabled} style="left:${
+          period.start / DAY_MINUTES * 100
+        }%;width:${
+          (period.end - period.start) / DAY_MINUTES * 100
+        }%" aria-label="Heizzeit ${formatMinute(period.start)} bis ${
+          formatMinute(period.end)
+        } bearbeiten"></button>`
+      ).join("")
+    }<span class="now" style="left:${
+      Math.min(clock.minute / DAY_MINUTES * 100, 99.8)
+    }%" aria-hidden="true"></span></div>
+        ${this._draftMessages()}
+        ${
+      !week.days.length
+        ? '<p class="notice">Noch keine Schaltpunkte vorhanden. Du kannst eine erste Heizzeit als Entwurf anlegen.</p>'
+        : ""
+    }
+        ${rows}
+        <div class="toolbar"><button class="action primary" type="button" data-action="period-add" ${
+      blocked || !intervals.some((interval) => interval.mode === "off")
+        ? "disabled"
+        : ""
+    }>+ Heizzeit</button><button class="action" type="button" data-action="undo" ${
+      blocked || !this._history.length ? "disabled" : ""
+    }>Rückgängig</button></div>
+      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button><button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div><p class="dialog-status">Apply bestätigt den Entwurf. Save ist noch nicht verfügbar.</p></footer>
+    </div></dialog>`;
+  }
+
+  _periodFormMarkup(disabled) {
+    const point = this._pointForm;
+    if (point.kind === "delete-period") {
+      return `<form class="point-form period-form"><h3>Heizzeit entfernen?</h3><p>${point.from} – ${point.to}</p><div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button></div></form>`;
+    }
+    return `<form class="point-form period-form"><h3>${
+      point.periodIndex === null ? "Neue Heizzeit" : "Heizzeit ändern"
+    }</h3><div class="fields"><label>Von<input type="text" inputmode="numeric" maxlength="5" data-point-field="from" value="${
+      escapeHtml(point.from)
+    }" required ${disabled}></label><label>Bis<input type="text" inputmode="numeric" maxlength="5" data-point-field="to" value="${
+      escapeHtml(point.to)
+    }" required ${disabled}></label></div><p class="hint">10-Minuten-Schritte · Ende bis 24:00</p><div class="toolbar"><button class="action primary" type="submit" ${disabled}>Apply</button><button class="action" type="button" data-action="cancel-point">Cancel</button>${
+      point.periodIndex !== null
+        ? `<button class="action" type="button" data-action="period-remove" data-index="${point.periodIndex}" ${disabled}>− Heizzeit</button>`
+        : ""
+    }</div></form>`;
   }
 
   _weekMarkup(week, clock) {
@@ -832,10 +1179,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         const readable = ranges.length ? ranges.join(" · ") : "Keine Heizzeit";
         return `<div class="day ${clock?.day === index ? "today" : ""}">
           <button class="day-button" data-day="${index}" type="button"
-            aria-expanded="${
-          this._expanded.has(index)
-        }" aria-controls="details-${index}"
-            aria-label="${LABELS[index]}: ${readable}. Details anzeigen.">
+            aria-label="${LABELS[index]}: ${readable}. Tag bearbeiten.">
             <span class="label">${LABELS[index].slice(0, 2)}</span>
             <span class="track" aria-hidden="true">${
           heating.map((interval) =>
@@ -857,15 +1201,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
             : ""
         }</span>
           </button>
-          <p class="details" id="details-${index}" ${
-          this._expanded.has(index) ? "" : "hidden"
-        }>
-            <span class="detail-name">${
-          LABELS[index]
-        }</span>${readable}</p></div>`;
+          </div>`;
       }).join("")
     }
-      <p class="hint">Tag antippen für genaue Zeiten. Angezeigt werden die programmierten Heiz- und Absenkzeiten.</p>`;
+      <p class="hint">Tagesbalken antippen zum Bearbeiten. Angezeigt werden die programmierten Heiz- und Absenkzeiten.</p>`;
   }
 }
 
