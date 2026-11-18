@@ -3,7 +3,7 @@
   "name": "Buderus RC30 Schedule",
   "codeowners": ["@jaal2001"],
   "config_flow": true,
-  "dependencies": ["frontend", "http"],
+  "dependencies": ["frontend", "http", "lovelace"],
   "documentation": "https://github.com/jaal2001/ha-buderus-rc30",
   "integration_type": "device",
   "iot_class": "local_polling",
