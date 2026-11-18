@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 DOMAIN = "buderus_rc30"
+CARD_PATH = "/buderus_rc30/buderus-rc30-schedule-card.js"
 NAME = "Buderus RC30 Schedule"
 SLOT_COUNT = 42
 SCAN_INTERVAL = timedelta(minutes=15)

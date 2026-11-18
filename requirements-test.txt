@@ -1,4 +1,5 @@
 # The fixture package pins Home Assistant 2026.10.4.
 pytest-homeassistant-custom-component==0.13.375
+home-assistant-frontend==20260930.5
 aioresponses==0.7.9
 ruff==0.17.5
