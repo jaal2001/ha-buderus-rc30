@@ -945,7 +945,11 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     const payload = {
       type: "buderus_rc30/save",
       entity_id: this._entity,
-      request_id: crypto.randomUUID(),
+      // getRandomValues also works on local HTTP Home Assistant installations.
+      request_id: Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join(""),
       confirmed: true,
       expected_slots: structuredClone(this._draft.base.slots),
       slots: structuredClone(this._draft.slots),

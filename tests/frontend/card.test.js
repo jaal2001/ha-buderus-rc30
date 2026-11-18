@@ -423,6 +423,10 @@ Deno.test("Apply and editing send no backend commands; Save sends one full final
     "Expected one Save",
   );
   assert(
+    /^[0-9a-f]{32}$/.test(calls[0].request_id),
+    "Request IDs must work on local HTTP without randomUUID",
+  );
+  assert(
     calls[0].confirmed && calls[0].slots.length === 42 &&
       calls[0].expected_slots.length === 42,
     "Full slot sets required",
