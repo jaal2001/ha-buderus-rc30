@@ -514,6 +514,7 @@ const CSS = `
 
 // The fallback base lets the data functions run in a DOM-free test environment.
 const ElementBase = globalThis.HTMLElement ?? class {};
+const CARD_VERSION = "0.5.1";
 
 export class BuderusRc30ScheduleCard extends ElementBase {
   constructor() {
@@ -545,6 +546,24 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       if (field && this._pointForm && !this._operationLocked()) {
         this._pointForm[field] = event.target.value;
         this._confirmSave = false;
+        const reason = this._saveBlockReason();
+        for (
+          const button of this.shadowRoot.querySelectorAll?.(
+            'button[data-action="save"]',
+          ) ?? []
+        ) {
+          button.disabled = Boolean(reason);
+          button.title = reason ??
+            "Alle bestätigten Änderungen an die Heizung übertragen";
+        }
+        for (
+          const hint
+            of this.shadowRoot.querySelectorAll?.("[data-save-hint]") ?? []
+        ) {
+          hint.textContent = `${
+            reason ? `Save gesperrt: ${reason}` : "Bereit zum Speichern."
+          } · Karte ${CARD_VERSION}`;
+        }
       }
     });
     this.shadowRoot.addEventListener("submit", (event) => {
@@ -584,6 +603,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }
     this._config = { ...config };
     this._render();
+    if (this._statusEntity !== this._entity) void this._refreshSaveStatus();
   }
 
   set hass(hass) {
@@ -759,7 +779,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
         escapeHtml(this._config.title ?? "Wochenprogramm")
       }</h2>
         <span class="badge">${
-        this._draft ? "Entwurf" : "Nur Lesen"
+        this._draft ? "Entwurf" : "Wochenübersicht"
       }</span></div>${content}${
         this._dialogDay === null ? this._saveMessages() : ""
       }</div></ha-card>${
@@ -814,24 +834,88 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     return Boolean(this._saving || this._uncertain || this._saveStatus?.busy);
   }
 
+  _saveBlockReason() {
+    if (!this._hass?.user?.is_admin) {
+      return "Speichern erfordert ein Home-Assistant-Administratorkonto.";
+    }
+    if (typeof this._hass?.callWS !== "function") {
+      return "Die Verbindung zu Home Assistant fehlt. Bitte die Seite neu laden.";
+    }
+    if (this._operationLocked()) {
+      return "Ein Speichervorgang läuft oder sein Ergebnis ist noch unklar.";
+    }
+    if (this._statusError === "unknown_command") {
+      return "Der Schreibdienst ist noch nicht geladen. Nach dem Integrationsupdate Home Assistant neu starten.";
+    }
+    if (this._statusError === "unauthorized") {
+      return "Home Assistant verweigert den Zugriff auf den Schreibdienst. Bitte mit einem Administratorkonto neu anmelden.";
+    }
+    if (this._statusError === "wrong_entity") {
+      return "Der ausgewählte Sensor ist kein registrierter RC30-Programmsensor.";
+    }
+    if (this._statusError === "not_ready") {
+      return "Die RC30-Integration ist noch nicht vollständig geladen.";
+    }
+    if (this._statusError) {
+      return "Der Speicherstatus ist nicht erreichbar. Verbindung prüfen und Status erneut laden.";
+    }
+    if (!this._saveStatus || this._statusEntity !== this._entity) {
+      return "Der Speicherstatus wird geladen.";
+    }
+    if (this._saveStatus.state === "recovery_required") {
+      return "Ein früherer Vorgang benötigt eine Entscheidung zur Wiederherstellung.";
+    }
+    if (!this._draft) {
+      return "Zuerst eine Heizzeit bearbeiten und mit Apply bestätigen.";
+    }
+    if (this._pointFormDirty()) {
+      return "Die offene Eingabe zuerst mit Apply bestätigen oder mit Cancel verwerfen.";
+    }
+    if (this._confirmDiscard || this._confirmPointCancel) {
+      return "Zuerst die offene Rückfrage beantworten.";
+    }
+    if (this._draftEntity !== this._entity) {
+      return "Der Programmsensor hat gewechselt. Bitte den Entwurf neu beginnen.";
+    }
+    const source = draftBlockReason(this._currentEntity(), this._draft);
+    if (source) return source;
+    if (!this._draft.slots.some((slot) => slot.occupied)) {
+      return "Ein vollständig leeres Programm wird nicht übertragen.";
+    }
+    if (!draftChanges(this._draft).length) {
+      return "Keine geänderten Schaltpunkte. Eine Änderung zuerst mit Apply bestätigen.";
+    }
+    return null;
+  }
+
   _canSave() {
-    return Boolean(
-      this._admin() && this._saveStatus &&
-        this._statusEntity === this._entity && this._draft &&
-        !this._operationLocked() && !this._pointFormDirty() &&
-        !this._confirmDiscard && !this._confirmPointCancel &&
-        this._saveStatus.state !== "recovery_required" &&
-        this._draftEntity === this._entity &&
-        !draftBlockReason(this._currentEntity(), this._draft) &&
-        this._draft.slots.some((slot) => slot.occupied) &&
-        draftChanges(this._draft).length,
-    );
+    return this._saveBlockReason() === null;
   }
 
   _saveButton() {
+    const reason = this._saveBlockReason();
     return `<button class="action primary" type="button" data-action="save" ${
-      this._canSave() ? "" : "disabled"
-    }>Save</button>`;
+      reason ? "disabled" : ""
+    } title="${
+      escapeHtml(
+        reason ?? "Alle bestätigten Änderungen an die Heizung übertragen",
+      )
+    }">Save</button>`;
+  }
+
+  _saveHint() {
+    const reason = this._saveBlockReason();
+    return `<p class="dialog-status" data-save-hint role="status">${
+      escapeHtml(
+        reason
+          ? `Save gesperrt: ${reason}`
+          : "Bereit zum Speichern. Apply bleibt lokal; Save überträgt den Wochenentwurf.",
+      )
+    } · Karte ${CARD_VERSION}</p>${
+      this._admin() && this._statusError
+        ? '<button class="action" type="button" data-action="refresh-status">Speicherstatus erneut laden</button>'
+        : ""
+    }`;
   }
 
   _saveMessages() {
@@ -927,10 +1011,16 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       });
       if (entity !== this._entity) return;
       this._statusEntity = entity;
+      this._statusError = null;
       if (!this._uncertain) this._saveNotice = null;
       this._acceptSaveStatus(status);
-    } catch {
+    } catch (error) {
       this._statusEntity = null;
+      this._statusError =
+        ["unknown_command", "unauthorized", "wrong_entity", "not_ready"]
+            .includes(error?.code)
+          ? error.code
+          : "unreachable";
       this._saveNotice =
         "Speicherstatus nicht erreichbar. Bitte Verbindung und installierte Integrationsversion prüfen.";
       this._render();
@@ -1002,6 +1092,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   _handleAction(action, index) {
+    if (action === "refresh-status") {
+      void this._refreshSaveStatus();
+      return;
+    }
     if (this._operationLocked()) return;
     if (action === "save") {
       if (this._canSave()) this._confirmSave = true;
@@ -1283,7 +1377,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }>Rückgängig</button>
         <button class="action" type="button" data-action="discard">Cancel</button>
         ${this._saveButton()}</div>
-      <p class="hint">Apply ändert nur den Entwurf. Save überträgt alle bestätigten Änderungen gemeinsam an die Heizung. Schreiben ist nur als Administrator möglich.</p>
+      ${this._saveHint()}
     </section>`;
   }
 
@@ -1401,7 +1495,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }>+ Heizzeit</button><button class="action" type="button" data-action="undo" ${
       blocked || !this._history.length ? "disabled" : ""
     }>Rückgängig</button></div>
-      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button>${this._saveButton()}</div><p class="dialog-status">Apply bestätigt den Entwurf. Save überträgt ihn an die Heizung.</p></footer>
+      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button>${this._saveButton()}</div>${this._saveHint()}</footer>
     </div></dialog>`;
   }
 

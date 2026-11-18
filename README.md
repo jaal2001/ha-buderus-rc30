@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.5.0
+# Buderus RC30 Schedule — v0.5.1
 
 Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. The dashboard supports local drafts and explicit,
@@ -179,6 +179,16 @@ the card also requests the browser's standard unload warning, which a browser
 may suppress and which Home Assistant navigation may not trigger. Card recreation,
 page reload or navigation can discard the in-memory draft. It is not a backup.
 The new Save/restore controls require live acceptance testing in the user's dashboard.
+
+## Save availability (v0.5.1)
+
+The overview badge reads **Wochenübersicht**, and changes to **Entwurf** while
+editing. It does not indicate whether saving is authorized. The editor explains
+why Save is unavailable: administrator permissions, backend status, unapplied
+input, stale/changed source data, or pending recovery. A failed local status query
+can be retried without querying the gateway. The visible card version helps
+identify an old browser module after upgrades. Restart Home Assistant and reload
+the browser after installing an update.
 
 ## Save and recovery (v0.5)
 
