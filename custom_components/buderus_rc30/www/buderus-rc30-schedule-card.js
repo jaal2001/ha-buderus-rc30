@@ -520,10 +520,12 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     super();
     this.attachShadow({ mode: "open" });
     this._draft = null;
+    this._saveStatus = null;
+    this._saving = false;
     this._dialogDay = null;
     this._history = [];
     this._beforeUnload = (event) => {
-      if (!this._hasUnsavedChanges()) return;
+      if (!this._hasUnsavedChanges() && !this._operationLocked()) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -540,7 +542,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     });
     this.shadowRoot.addEventListener("input", (event) => {
       const field = event.target.dataset.pointField;
-      if (field && this._pointForm) this._pointForm[field] = event.target.value;
+      if (field && this._pointForm && !this._operationLocked()) {
+        this._pointForm[field] = event.target.value;
+        this._confirmSave = false;
+      }
     });
     this.shadowRoot.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -559,7 +564,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   setConfig(config) {
-    if (this._draft && config.entity !== this._config?.entity) {
+    if (
+      (this._draft || this._operationLocked()) &&
+      config.entity !== this._config?.entity
+    ) {
       throw new Error(
         "Bitte den Entwurf verwerfen, bevor der Sensor gewechselt wird.",
       );
@@ -585,19 +593,26 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     if (
       this._entity &&
       previous?.states[this._entity] === hass.states[this._entity] &&
-      previous?.config?.time_zone === hass.config?.time_zone
+      previous?.config?.time_zone === hass.config?.time_zone &&
+      previous?.user === hass.user
     ) return;
     this._render();
+    if (this._statusEntity !== this._entity) void this._refreshSaveStatus();
   }
 
   connectedCallback() {
     globalThis.addEventListener("beforeunload", this._beforeUnload);
-    this._timer = setInterval(() => this._render(), 60_000);
+    this._timer = setInterval(() => {
+      this._render();
+      void this._refreshSaveStatus();
+    }, 60_000);
     this._render();
+    void this._refreshSaveStatus();
   }
 
   disconnectedCallback() {
     clearInterval(this._timer);
+    clearTimeout(this._saveTimer);
     globalThis.removeEventListener("beforeunload", this._beforeUnload);
   }
 
@@ -623,7 +638,13 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     let content;
     let dialogBlocked = null;
     try {
-      this._entity = resolveEntity(this._hass.states, this._config.entity);
+      const resolved = resolveEntity(this._hass.states, this._config.entity);
+      if (this._entity !== resolved) {
+        this._saveStatus = null;
+        this._statusEntity = null;
+        this._confirmRestore = false;
+      }
+      this._entity = resolved;
       const entity = this._hass.states[this._entity];
       if (!entity) {
         throw new Error("Der ausgewählte Sensor wurde nicht gefunden.");
@@ -637,7 +658,9 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       const blocked = this._draft && this._draftEntity !== this._entity
         ? "Der Programmsensor hat gewechselt. Bitte den Entwurf verwerfen."
         : draftBlockReason(entity, this._draft);
-      dialogBlocked = blocked;
+      dialogBlocked = this._operationLocked()
+        ? "Speicherung läuft. Bitte warten."
+        : blocked;
       const preview = this._draft ? draftAttributes(this._draft) : null;
       const week = preview
         ? buildWeek(preview, String(42 - preview.free_slots))
@@ -658,7 +681,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }).format(verified);
       const active = entity.attributes.active_program;
       const warnings = [];
-      if (this._draft) {
+      if (this._draft && !this._operationLocked()) {
         warnings.push(
           "Entwurfsvorschau – Änderungen sind nur in dieser Karte vorgemerkt. Das Heizungsprogramm bleibt unverändert.",
         );
@@ -737,11 +760,19 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }</h2>
         <span class="badge">${
         this._draft ? "Entwurf" : "Nur Lesen"
-      }</span></div>${content}</div></ha-card>${
+      }</span></div>${content}${
+        this._dialogDay === null ? this._saveMessages() : ""
+      }</div></ha-card>${
         this._draft && this._dialogDay !== null
           ? this._dayDialogMarkup(dialogBlocked)
           : ""
       }`;
+    if (this._operationLocked()) {
+      for (
+        const control
+          of this.shadowRoot.querySelectorAll?.("button, input, select") ?? []
+      ) control.disabled = true;
+    }
     const dialog = this.shadowRoot.querySelector?.("dialog.day-dialog");
     if (dialog && !dialog.open && this.isConnected) dialog.showModal();
     const dialogBody = this.shadowRoot.querySelector?.(".dialog-body");
@@ -774,11 +805,237 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }
   }
 
+  _admin() {
+    return this._hass?.user?.is_admin === true &&
+      typeof this._hass?.callWS === "function";
+  }
+
+  _operationLocked() {
+    return Boolean(this._saving || this._uncertain || this._saveStatus?.busy);
+  }
+
+  _canSave() {
+    return Boolean(
+      this._admin() && this._saveStatus &&
+        this._statusEntity === this._entity && this._draft &&
+        !this._operationLocked() && !this._pointFormDirty() &&
+        !this._confirmDiscard && !this._confirmPointCancel &&
+        this._saveStatus.state !== "recovery_required" &&
+        this._draftEntity === this._entity &&
+        !draftBlockReason(this._currentEntity(), this._draft) &&
+        this._draft.slots.some((slot) => slot.occupied) &&
+        draftChanges(this._draft).length,
+    );
+  }
+
+  _saveButton() {
+    return `<button class="action primary" type="button" data-action="save" ${
+      this._canSave() ? "" : "disabled"
+    }>Save</button>`;
+  }
+
+  _saveMessages() {
+    const status = this._saveStatus;
+    const errors = {
+      source_changed:
+        "Das Programm wurde inzwischen geändert. Bitte den Entwurf verwerfen und auf der aktuellen Grundlage neu bearbeiten.",
+      program_changed:
+        "own 1 ist nicht mehr aktiv. Es wird nichts weiter geschrieben.",
+      backup_failed:
+        "Die Sicherung konnte nicht zuverlässig gespeichert werden.",
+      backup_invalid:
+        "Die Sicherung ist ungültig. Eine automatische Wiederherstellung ist gesperrt.",
+      recovery_conflict:
+        "Das Programm wurde seit dem Fehler anderweitig geändert. Die Wiederherstellung ist zum Schutz dieser Änderungen gesperrt.",
+      interrupted:
+        "Der Vorgang wurde unterbrochen. Die Sicherung ist erhalten.",
+      write_failed:
+        "Die Übertragung ist fehlgeschlagen. Einzelne Änderungen können bereits übernommen worden sein.",
+      verification_failed:
+        "Das gelesene Programm stimmt nicht vollständig mit dem gewünschten Stand überein.",
+      read_failed:
+        "Das Ergebnis konnte nicht vollständig gelesen und geprüft werden.",
+      restore_failed:
+        "Die Wiederherstellung konnte nicht bestätigt werden. Die Sicherung bleibt erhalten.",
+    };
+    let text = this._saveNotice ?? "";
+    if (this._operationLocked()) {
+      text = `Speicherung läuft oder wird geprüft · ${status?.completed ?? 0}/${
+        status?.total ?? 0
+      } Slots übertragen. Bei Verbindungsabbruch läuft der Vorgang in Home Assistant weiter. Nicht anderweitig bearbeiten.`;
+    } else if (this._saveNotice) text = this._saveNotice;
+    else if (status?.state === "succeeded") {
+      text = "Gespeichert und vollständig geprüft.";
+    } else if (status?.state === "rolled_back") {
+      text =
+        "Der vorherige Stand wurde wiederhergestellt und vollständig geprüft. Ein vorhandener Entwurf bleibt lokal erhalten.";
+    } else if (["recovery_required", "rejected"].includes(status?.state)) {
+      text = errors[status.error] ??
+        "Der Vorgang konnte nicht abgeschlossen werden. Bitte den aktuellen Stand prüfen.";
+    }
+    return `${
+      text ? `<p class="notice" role="status">${escapeHtml(text)}</p>` : ""
+    }
+      ${
+      status?.can_restore && this._admin() && !this._operationLocked() &&
+        !this._confirmRestore
+        ? '<button class="action" type="button" data-action="restore">Vorherigen Stand wiederherstellen …</button>'
+        : ""
+    }
+      ${
+      this._confirmRestore
+        ? '<p class="notice" role="alert">Den gesicherten Stand vor dem Speichern an die Heizung zurückschreiben? Die Sicherung bleibt bei einem Fehler erhalten.</p><div class="toolbar"><button class="action primary" type="button" data-action="confirm-restore">Ja, wiederherstellen</button><button class="action" type="button" data-action="cancel-restore">Jetzt nicht</button></div>'
+        : ""
+    }
+      ${
+      this._confirmSave
+        ? `<p class="notice" role="alert">${
+          draftChanges(this._draft).length
+        } geänderte Slots aus dem gesamten Wochenentwurf jetzt an die Heizung übertragen?</p><div class="toolbar"><button class="action primary" type="button" data-action="confirm-save">Jetzt speichern</button><button class="action" type="button" data-action="cancel-save">Weiter bearbeiten</button></div>`
+        : ""
+    }`;
+  }
+
+  _acceptSaveStatus(status) {
+    this._saveStatus = status;
+    if (this._uncertain && status.request_id === this._saveRequestId) {
+      this._saveNotice = null;
+    }
+    this._uncertain = false;
+    if (!status.busy && status.request_id === this._saveRequestId) {
+      this._saving = false;
+      if (status.state === "succeeded") this._clearDraft();
+    }
+    this._render();
+  }
+
+  _scheduleStatusCheck() {
+    clearTimeout(this._saveTimer);
+    if ((this._operationLocked()) && this.isConnected) {
+      this._saveTimer = setTimeout(() => void this._refreshSaveStatus(), 2000);
+    }
+  }
+
+  async _refreshSaveStatus() {
+    if (!this._admin() || !this._entity || this._statusLoading) return;
+    const entity = this._entity;
+    this._statusLoading = true;
+    try {
+      const status = await this._hass.callWS({
+        type: "buderus_rc30/save_status",
+        entity_id: entity,
+      });
+      if (entity !== this._entity) return;
+      this._statusEntity = entity;
+      if (!this._uncertain) this._saveNotice = null;
+      this._acceptSaveStatus(status);
+    } catch {
+      this._statusEntity = null;
+      this._saveNotice =
+        "Speicherstatus nicht erreichbar. Bitte Verbindung und installierte Integrationsversion prüfen.";
+      this._render();
+    } finally {
+      this._statusLoading = false;
+      this._scheduleStatusCheck();
+    }
+  }
+
+  async _sendSave() {
+    if (!this._canSave() || !this._confirmSave) return;
+    const payload = {
+      type: "buderus_rc30/save",
+      entity_id: this._entity,
+      // getRandomValues also works on local HTTP Home Assistant installations.
+      request_id: Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join(""),
+      confirmed: true,
+      expected_slots: structuredClone(this._draft.base.slots),
+      slots: structuredClone(this._draft.slots),
+    };
+    this._saveRequestId = payload.request_id;
+    this._confirmSave = false;
+    await this._sendOperation(payload);
+  }
+
+  async _sendRestore() {
+    if (
+      !this._admin() || !this._confirmRestore ||
+      !this._saveStatus?.can_restore || this._operationLocked()
+    ) return;
+    const payload = {
+      type: "buderus_rc30/restore",
+      entity_id: this._entity,
+      request_id: this._saveStatus.request_id,
+      confirmed: true,
+    };
+    this._confirmRestore = false;
+    this._saveRequestId = payload.request_id;
+    await this._sendOperation(payload);
+  }
+
+  async _sendOperation(payload) {
+    this._saving = true;
+    this._saveNotice = null;
+    this._render();
+    this._scheduleStatusCheck();
+    try {
+      const status = await this._hass.callWS(payload);
+      this._saving = false;
+      this._acceptSaveStatus(status);
+    } catch {
+      // A lost response never proves that the gateway remained unchanged.
+      this._saving = false;
+      this._uncertain = true;
+      this._saveNotice =
+        "Antwort fehlt. Der gespeicherte Vorgangsstatus wird abgefragt; es wird nicht erneut geschrieben.";
+      await this._refreshSaveStatus();
+    } finally {
+      this._render();
+      this._scheduleStatusCheck();
+    }
+  }
+
   _currentEntity() {
     return this._hass?.states[this._entity];
   }
 
   _handleAction(action, index) {
+    if (this._operationLocked()) return;
+    if (action === "save") {
+      if (this._canSave()) this._confirmSave = true;
+      this._render();
+      return;
+    }
+    if (action === "confirm-save") {
+      if (this._confirmSave && this._canSave()) void this._sendSave();
+      return;
+    }
+    if (action === "cancel-save") {
+      this._confirmSave = false;
+      this._render();
+      return;
+    }
+    if (action === "restore") {
+      if (this._saveStatus?.can_restore && this._admin()) {
+        this._confirmRestore = true;
+      }
+      this._render();
+      return;
+    }
+    if (action === "confirm-restore") {
+      if (
+        this._confirmRestore && this._saveStatus?.can_restore && this._admin()
+      ) void this._sendRestore();
+      return;
+    }
+    if (action === "cancel-restore") {
+      this._confirmRestore = false;
+      this._render();
+      return;
+    }
+    this._confirmSave = false;
     this._draftError = null;
     if (
       [
@@ -906,6 +1163,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
 
   _clearDraft() {
     this._draft = null;
+    this._confirmSave = false;
     this._pointForm = null;
     this._history = [];
     this._confirmDiscard = false;
@@ -934,6 +1192,8 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   _applyPoint() {
+    if (this._operationLocked()) return;
+    this._confirmSave = false;
     try {
       if (
         !this._draft || !this._pointForm || this._draftEntity !== this._entity
@@ -970,6 +1230,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
 
   _draftMessages() {
     return `${
+      this._draft && !this._draft.slots.some((slot) => slot.occupied)
+        ? '<p class="notice">Ein vollständig leeres Programm wird nicht übertragen, da dessen Heizverhalten nicht eindeutig ist. Bitte mindestens einen Schaltpunkt beibehalten.</p>'
+        : ""
+    }${
       this._confirmDiscard
         ? `<p class="notice" role="alert">Ungespeicherte Änderungen verwerfen? Sie werden nicht gespeichert.</p><div class="toolbar"><button class="action" type="button" data-action="confirm-discard">Änderungen verwerfen</button><button class="action" type="button" data-action="keep">Weiter bearbeiten</button></div>`
         : ""
@@ -1018,8 +1282,8 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       blocked || !this._history.length ? "disabled" : ""
     }>Rückgängig</button>
         <button class="action" type="button" data-action="discard">Cancel</button>
-        <button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div>
-      <p class="hint">Save ist noch nicht verfügbar: Die abgesicherte Übertragung an die Heizung folgt separat.</p>
+        ${this._saveButton()}</div>
+      <p class="hint">Apply ändert nur den Entwurf. Save überträgt alle bestätigten Änderungen gemeinsam an die Heizung. Schreiben ist nur als Administrator möglich.</p>
     </section>`;
   }
 
@@ -1123,6 +1387,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       Math.min(clock.minute / DAY_MINUTES * 100, 99.8)
     }%" aria-hidden="true"></span></div>
         ${this._draftMessages()}
+        ${this._saveMessages()}
         ${
       !week.days.length
         ? '<p class="notice">Noch keine Schaltpunkte vorhanden. Du kannst eine erste Heizzeit als Entwurf anlegen.</p>'
@@ -1136,7 +1401,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }>+ Heizzeit</button><button class="action" type="button" data-action="undo" ${
       blocked || !this._history.length ? "disabled" : ""
     }>Rückgängig</button></div>
-      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button><button class="action primary" type="button" data-action="save" disabled title="Die Übertragung an die Heizung ist noch nicht verfügbar.">Save</button></div><p class="dialog-status">Apply bestätigt den Entwurf. Save ist noch nicht verfügbar.</p></footer>
+      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button>${this._saveButton()}</div><p class="dialog-status">Apply bestätigt den Entwurf. Save überträgt ihn an die Heizung.</p></footer>
     </div></dialog>`;
   }
 

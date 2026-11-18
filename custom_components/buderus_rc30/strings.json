@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to EMS-ESP",
-        "description": "Read HC1, own 1 only. Enter a hostname or HTTP(S) origin and API key. Validation reads all 42 slots and can take up to 3 minutes. The selector POST requires an API key with command permission.",
+        "description": "Read HC1, own 1. The dashboard can write this schedule after an explicit admin Save. Enter a hostname or HTTP(S) origin and API key. Validation reads all 42 slots and can take up to 3 minutes. The selector POST requires an API key with command permission.",
         "data": {
           "host": "Hostname or HTTP(S) origin",
           "api_key": "API key"
