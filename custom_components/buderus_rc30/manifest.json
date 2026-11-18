@@ -3,11 +3,11 @@
   "name": "Buderus RC30 Schedule",
   "codeowners": ["@jaal2001"],
   "config_flow": true,
-  "dependencies": ["frontend", "http", "lovelace"],
+  "dependencies": ["frontend", "http", "lovelace", "websocket_api"],
   "documentation": "https://github.com/jaal2001/ha-buderus-rc30",
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/jaal2001/ha-buderus-rc30/issues",
   "requirements": [],
-  "version": "0.4.1"
+  "version": "0.5.0"
 }

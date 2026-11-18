@@ -270,3 +270,53 @@ async def test_invalid_key(key):
     async with aiohttp.ClientSession() as session:
         with pytest.raises(ValueError):
             EmsEspClient(session, HOST, key)
+
+
+async def test_slot_writes_require_exclusive_transaction():
+    """No frontend-like caller may issue an unguarded slot mutation."""
+    from custom_components.buderus_rc30.api import ScheduleSlot
+
+    async with aiohttp.ClientSession() as session:
+        client = EmsEspClient(session, HOST, "test-key")
+        with pytest.raises(RuntimeError):
+            await client.async_write_slot(ScheduleSlot(1, "mo", "09:30", "off"))
+
+
+async def test_write_payload_is_fixed_validated_and_never_retried():
+    """A write timeout is uncertain; do not repeat the POST."""
+    from custom_components.buderus_rc30.api import ScheduleSlot
+
+    async with aiohttp.ClientSession() as session:
+        client = EmsEspClient(session, HOST, "test-key")
+        with aioresponses() as responses:
+            responses.post(SWITCH, status=200)
+            responses.post(SWITCH, exception=TimeoutError())
+            async with client.async_transaction():
+                await client.async_write_slot(ScheduleSlot(1, "mo", "09:30", "off"))
+                with pytest.raises(CommunicationError):
+                    await client.async_write_slot(ScheduleSlot(2))
+            requests = responses.requests[("POST", URL(SWITCH))]
+            assert [request.kwargs["json"] for request in requests] == [
+                {"value": "01 mo 09:30 off"},
+                {"value": "02 not_set"},
+            ]
+
+
+async def test_fresh_save_pass_changes_cached_slot_before_complete_scan():
+    """Discard a sentinel read so slot zero cannot reuse the previous write echo."""
+    from unittest.mock import AsyncMock
+
+    from custom_components.buderus_rc30.api import ScheduleSlot
+
+    async with aiohttp.ClientSession() as session:
+        client = EmsEspClient(session, HOST, "test-key")
+        with (
+            patch.object(client, "_request", new=AsyncMock(return_value="own 1")),
+            patch.object(
+                client, "_read_slot", new=AsyncMock(side_effect=lambda index: ScheduleSlot(index))
+            ) as read,
+        ):
+            async with client.async_transaction():
+                result = await client.async_read_locked(fresh=True)
+            assert [call.args[0] for call in read.await_args_list] == [41, *range(42)]
+            assert len(result.slots) == 42

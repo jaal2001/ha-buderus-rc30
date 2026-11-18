@@ -83,4 +83,5 @@ class Rc30Sensor(CoordinatorEntity[Rc30Coordinator], SensorEntity):
             "free_slots": SLOT_COUNT - data.occupied_count,
             "verified_at": data.fetched_at.isoformat(),
             "slots": [slot.as_dict() for slot in data.slots],
+            "save_status": self.coordinator.writer.status(),
         }

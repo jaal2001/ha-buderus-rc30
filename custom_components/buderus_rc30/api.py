@@ -1,10 +1,11 @@
-"""Small asynchronous EMS-ESP client with a read-selector-only POST boundary."""
+"""Asynchronous EMS-ESP client with explicit, serialized schedule writes."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -108,6 +109,55 @@ class ScheduleSnapshot:
         return sum(slot.occupied for slot in self.slots)
 
 
+def slot_value(slot: ScheduleSlot) -> str:
+    """Serialize only a validated physical slot, never arbitrary commands."""
+    if not slot.occupied:
+        if slot.time is not None or slot.mode is not None:
+            raise ValueError("Invalid empty slot")
+        value = f"{slot.index:02d} not_set"
+    else:
+        value = f"{slot.index:02d} {slot.day} {slot.time} {slot.mode}"
+    if parse_slot(slot.index, value) != slot:
+        raise ValueError("Invalid slot")
+    return value
+
+
+def decode_slots(raw: Any, *, require_nonempty: bool = False) -> tuple[ScheduleSlot, ...]:
+    """Validate untrusted frontend and stored data independently of the card."""
+    if not isinstance(raw, list) or len(raw) != SLOT_COUNT:
+        raise ValueError("Exactly 42 slots are required")
+    slots: dict[int, ScheduleSlot] = {}
+    transitions: dict[int, str] = {}
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"slot", "occupied", "day", "time", "mode"}:
+            raise ValueError("Invalid slot fields")
+        if not isinstance(item["slot"], str) or not re.fullmatch(r"[0-9]{2}", item["slot"]):
+            raise ValueError("Invalid slot index")
+        index = int(item["slot"])
+        if index in slots or index >= SLOT_COUNT or type(item["occupied"]) is not bool:
+            raise ValueError("Invalid slot index or occupancy")
+        if not item["occupied"] and any(item[key] is not None for key in ("day", "time", "mode")):
+            raise ValueError("Invalid empty slot")
+        slot = ScheduleSlot(index, item["day"], item["time"], item["mode"])
+        if slot.occupied != item["occupied"]:
+            raise ValueError("Inconsistent occupancy")
+        slot_value(slot)
+        if slot.occupied:
+            hour, minute = map(int, slot.time.split(":"))
+            position = (
+                ("mo", "tu", "we", "th", "fr", "sa", "su").index(slot.day) * 1440
+                + hour * 60
+                + minute
+            ) % 10080
+            if position in transitions and transitions[position] != slot.mode:
+                raise ValueError("Conflicting switching points")
+            transitions[position] = slot.mode
+        slots[index] = slot
+    if require_nonempty and not transitions:
+        raise ValueError("An empty program cannot be written")
+    return tuple(slots[index] for index in range(SLOT_COUNT))
+
+
 _SLOT_PATTERN = re.compile(
     r"(?P<index>[0-9]{2}) (?:(?P<empty>not_set)|"
     r"(?P<day>mo|tu|we|th|fr|sa|su) "
@@ -133,7 +183,7 @@ def parse_slot(expected: int, raw: Any) -> ScheduleSlot:
 
 
 class EmsEspClient:
-    """Serialize complete polls; expose no schedule-writing method."""
+    """Serialize complete polls and exclusive save/restore transactions."""
 
     def __init__(self, session: aiohttp.ClientSession, host: str, api_key: str) -> None:
         """Use the caller's session and keep secrets out of representations."""
@@ -147,6 +197,21 @@ class EmsEspClient:
             raise ValueError("Enter a non-empty API key")
         self._api_key = api_key.strip()
         self._lock = asyncio.Lock()
+        self._owner = None
+
+    @asynccontextmanager
+    async def async_transaction(self):
+        """Prevent this integration's polling from interleaving with a save."""
+        async with self._lock:
+            self._owner = asyncio.current_task()
+            try:
+                yield self
+            finally:
+                self._owner = None
+
+    def _require_transaction(self) -> None:
+        if self._owner is not asyncio.current_task():
+            raise RuntimeError("An exclusive transaction is required")
 
     async def _request(self, method: str, path: str, slot: int | None = None) -> Any:
         """Allow only two read endpoints and a two-digit slot selector POST."""
@@ -158,6 +223,10 @@ class EmsEspClient:
             payload = None
         else:
             raise ValueError("Unsupported API operation")
+        return await self._http_request(method, path, payload)
+
+    async def _http_request(self, method: str, path: str, payload: dict | None) -> Any:
+        """Keep transport errors sanitized for both reads and writes."""
         try:
             async with self._session.request(
                 method,
@@ -205,15 +274,29 @@ class EmsEspClient:
 
     async def async_read_schedule(self) -> ScheduleSnapshot:
         """Publish only complete passes; never return a partial schedule."""
-        async with self._lock:
-            try:
-                async with asyncio.timeout(POLL_TIMEOUT):
-                    program = await self._request("GET", PROGRAM_PATH)
-                    if len(program) > 64:
-                        raise InvalidResponse("Invalid program response")
-                    slots = tuple([await self._read_slot(index) for index in range(SLOT_COUNT)])
-                    if await self._request("GET", PROGRAM_PATH) != program:
-                        raise InvalidResponse("Active program changed during polling")
-                    return ScheduleSnapshot(slots, program, datetime.now(UTC))
-            except TimeoutError:
-                raise CommunicationError("Schedule polling timed out") from None
+        async with self.async_transaction():
+            return await self.async_read_locked()
+
+    async def async_read_locked(self, *, fresh: bool = False) -> ScheduleSnapshot:
+        """Force a different cached slot before a save's complete verification pass."""
+        self._require_transaction()
+        try:
+            async with asyncio.timeout(POLL_TIMEOUT):
+                program = await self._request("GET", PROGRAM_PATH)
+                if len(program) > 64:
+                    raise InvalidResponse("Invalid program response")
+                if fresh:
+                    await self._read_slot(41)
+                slots = tuple([await self._read_slot(index) for index in range(SLOT_COUNT)])
+                if await self._request("GET", PROGRAM_PATH) != program:
+                    raise InvalidResponse("Active program changed during polling")
+                return ScheduleSnapshot(slots, program, datetime.now(UTC))
+        except TimeoutError:
+            raise CommunicationError("Schedule polling timed out") from None
+
+    async def async_write_slot(self, slot: ScheduleSlot) -> None:
+        """Send one validated slot exactly once; verification is a separate full pass."""
+        self._require_transaction()
+        await self._http_request("POST", SWITCHTIME_PATH, {"value": slot_value(slot)})
+        # Pace bus commands without adding per-slot REST verification requests.
+        await asyncio.sleep(SETTLE_DELAY)

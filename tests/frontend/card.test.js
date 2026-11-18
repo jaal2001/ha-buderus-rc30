@@ -374,14 +374,221 @@ Deno.test("browser unload warning protects pending inputs", () => {
     "Pending input should trigger warning",
   );
 });
-Deno.test("Save remains visibly disabled in the day dialog", () => {
+Deno.test("Save stays disabled without an administrator and confirmed changes", () => {
   const card = monday();
   assert(
     /data-action="save" disabled/.test(card.shadowRoot.innerHTML),
     "Save must remain unavailable",
   );
   assert(
-    card.shadowRoot.innerHTML.includes("Save ist noch nicht verfügbar"),
+    card.shadowRoot.innerHTML.includes("Save überträgt"),
     "Save status missing",
   );
+});
+
+function adminCard() {
+  const card = monday();
+  card._hass.user = { is_admin: true };
+  const calls = [];
+  card._hass.callWS = (payload) => {
+    calls.push(structuredClone(payload));
+    return Promise.resolve({ state: "idle", busy: false, can_restore: false });
+  };
+  card._statusEntity = card._entity;
+  card._saveStatus = { state: "idle", busy: false, can_restore: false };
+  return { card, calls };
+}
+Deno.test("Apply and editing send no backend commands; Save sends one full final draft", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:10");
+  applyRange(card, "period-edit", "0", "06:20", "09:20");
+  assert(calls.length === 0, "Apply must stay local");
+  assert(card._canSave(), "Applied draft should be saveable");
+  card._handleAction("save");
+  assert(
+    calls.length === 0 && card._confirmSave,
+    "Review must precede writing",
+  );
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({
+      state: "succeeded",
+      request_id: payload.request_id,
+      busy: false,
+    });
+  };
+  await card._sendSave();
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/save",
+    "Expected one Save",
+  );
+  assert(
+    calls[0].confirmed && calls[0].slots.length === 42 &&
+      calls[0].expected_slots.length === 42,
+    "Full slot sets required",
+  );
+  assert(calls[0].slots[0].time === "06:20", "Only final edit should be sent");
+  assert(calls[0].expected_slots[0].time === "06:00", "Original baseline lost");
+  assert(
+    card._draft === null && !card._operationLocked(),
+    "Verified success must clear draft",
+  );
+});
+Deno.test("Save refuses pending input and Cancel in save confirmation keeps draft", () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("period-edit", "0");
+  card._pointForm.from = "06:20";
+  card._handleAction("save");
+  assert(
+    !card._confirmSave && !card._canSave(),
+    "Unapplied input cannot be saved",
+  );
+  card._applyPoint();
+  card._handleAction("save");
+  card._handleAction("cancel-save");
+  assert(
+    card._draft && !card._confirmSave && calls.length === 0,
+    "Cancel must retain local changes",
+  );
+});
+Deno.test("busy saves lock Apply, discard and duplicate Save", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("save");
+  let finish;
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return new Promise((resolve) => finish = resolve);
+  };
+  const saving = card._sendSave();
+  const draft = JSON.stringify(card._draft);
+  card._handleAction("confirm-discard");
+  card._handleAction("undo");
+  card._handleAction("save");
+  card._applyPoint();
+  await card._sendSave();
+  assert(
+    JSON.stringify(card._draft) === draft && calls.length === 1,
+    "Busy edits or duplicate writes occurred",
+  );
+  finish({ state: "succeeded", request_id: calls[0].request_id, busy: false });
+  await saving;
+});
+Deno.test("partial save failure offers restore but never sends it automatically", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("save");
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({
+      state: "recovery_required",
+      request_id: payload.request_id,
+      error: "write_failed",
+      can_restore: true,
+      busy: false,
+    });
+  };
+  await card._sendSave();
+  assert(
+    calls.length === 1 && card._draft && !card._canSave(),
+    "Failure must preserve draft and block fresh Save",
+  );
+  assert(
+    card.shadowRoot.innerHTML.includes("Vorherigen Stand wiederherstellen"),
+    "Restore offer missing",
+  );
+  card._handleAction("restore");
+  card._handleAction("cancel-restore");
+  await card._sendRestore();
+  assert(calls.length === 1, "Declining restore must never write");
+  card._handleAction("restore");
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({
+      state: "rolled_back",
+      request_id: payload.request_id,
+      can_restore: false,
+      busy: false,
+    });
+  };
+  await card._sendRestore();
+  assert(
+    calls.length === 2 && calls[1].type === "buderus_rc30/restore" &&
+      calls[1].confirmed,
+    "Explicit restore command missing",
+  );
+  assert(card._draft, "Restoration must not discard draft silently");
+});
+Deno.test("lost save response queries status instead of repeating writes", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("save");
+  let requestId;
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    if (payload.type === "buderus_rc30/save") {
+      requestId = payload.request_id;
+      return Promise.reject(new Error("Connection lost"));
+    }
+    return Promise.resolve({
+      state: "succeeded",
+      request_id: requestId,
+      busy: false,
+    });
+  };
+  await card._sendSave();
+  assert(
+    calls.map((call) => call.type).join(",") ===
+      "buderus_rc30/save,buderus_rc30/save_status",
+    "Uncertain Save must only query status",
+  );
+  assert(
+    card._draft === null && !card._operationLocked(),
+    "Confirmed status should resolve uncertainty",
+  );
+});
+Deno.test("unreachable status retains uncertainty and locks editing", async () => {
+  const { card } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("save");
+  card._hass.callWS = () => Promise.reject(new Error("Offline"));
+  await card._sendSave();
+  assert(
+    card._operationLocked() && card._draft && !card._canSave(),
+    "Unknown outcome must remain protected",
+  );
+});
+Deno.test("stored recovery can be discovered without an existing browser draft", async () => {
+  const { card, calls } = adminCard();
+  card._clearDraft();
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({
+      state: "recovery_required",
+      request_id: "older-request",
+      error: "interrupted",
+      can_restore: true,
+      busy: false,
+    });
+  };
+  await card._refreshSaveStatus();
+  assert(
+    !card._draft &&
+      card.shadowRoot.innerHTML.includes("Vorherigen Stand wiederherstellen"),
+    "Restart recovery must be visible",
+  );
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/save_status",
+    "Loading recovery must not write",
+  );
+});
+Deno.test("newer source data and non-admin users cannot save", () => {
+  const { card } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._hass.user.is_admin = false;
+  assert(!card._canSave(), "Non-admin Save must be blocked");
+  card._hass.user.is_admin = true;
+  card._currentEntity().attributes.slots[0].time = "05:00";
+  assert(!card._canSave(), "Changed baseline must be blocked");
 });

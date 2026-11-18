@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Mit EMS-ESP verbinden",
-        "description": "Liest ausschließlich Heizkreis 1, own 1. Hostname oder HTTP(S)-Adresse und API-Schlüssel eingeben. Die Prüfung liest alle 42 Slots und kann bis zu 3 Minuten dauern. Der Auswahl-POST benötigt einen Schlüssel mit Befehlsberechtigung.",
+        "description": "Liest Heizkreis 1, own 1. Die Karte kann dieses Programm nach ausdrücklichem Save durch einen Administrator schreiben. Hostname oder HTTP(S)-Adresse und API-Schlüssel eingeben. Die Prüfung liest alle 42 Slots und kann bis zu 3 Minuten dauern. Der Auswahl-POST benötigt einen Schlüssel mit Befehlsberechtigung.",
         "data": {
           "host": "Hostname oder HTTP(S)-Adresse",
           "api_key": "API-Schlüssel"

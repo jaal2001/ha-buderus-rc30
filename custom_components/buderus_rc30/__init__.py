@@ -1,4 +1,4 @@
-"""Read-only Buderus RC30 schedule through EMS-ESP."""
+"""Buderus RC30 schedule through EMS-ESP with explicit, verified saves."""
 
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from .api import EmsEspClient
 from .const import CARD_PATH, DOMAIN
 from .coordinator import Rc30Coordinator
 from .frontend import async_register_card
+from .websocket import async_register_commands
 
 PLATFORMS = [Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -32,6 +33,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
         ]
     )
+    async_register_commands(hass)
     integration = await async_get_integration(hass, DOMAIN)
     await async_register_card(hass, str(integration.version))
     return True
@@ -43,6 +45,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool
         async_get_clientsession(hass), entry.data[CONF_HOST], entry.data[CONF_API_KEY]
     )
     coordinator = Rc30Coordinator(hass, entry, client)
+    await coordinator.writer.async_initialize()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -51,4 +54,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool
 
 async def async_unload_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool:
     """Unload platforms; the coordinator then removes its polling listener."""
+    await entry.runtime_data.writer.async_wait_idle()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -91,3 +91,20 @@ async def test_coordinator_error_sanitization(hass, config_entry, mock_poll):
         mock_poll.side_effect = AuthenticationError("test-key private-host")
         with pytest.raises(ConfigEntryAuthFailed):
             await coordinator._async_update_data()
+
+
+async def test_unload_waits_for_an_active_save(hass, config_entry, mock_poll):
+    """Do not replace the transaction owner while a save is running."""
+    import asyncio
+
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    writer = config_entry.runtime_data.writer
+    writer.busy = True
+    writer._idle.clear()
+    unloading = asyncio.create_task(hass.config_entries.async_unload(config_entry.entry_id))
+    await asyncio.sleep(0)
+    assert not unloading.done()
+    writer.busy = False
+    writer._idle.set()
+    assert await unloading

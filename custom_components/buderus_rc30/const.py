@@ -1,4 +1,4 @@
-"""Constants for the read-only RC30 schedule integration."""
+"""Constants for the RC30 schedule integration."""
 
 from datetime import timedelta
 

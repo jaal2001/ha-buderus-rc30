@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import AuthenticationError, EmsEspClient, EmsEspError, ScheduleSnapshot
 from .const import DOMAIN, SCAN_INTERVAL
+from .writer import ScheduleWriter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class Rc30Coordinator(DataUpdateCoordinator[ScheduleSnapshot]):
             update_interval=SCAN_INTERVAL,
         )
         self.client = client
+        self.writer = ScheduleWriter(hass, entry.entry_id, self)
 
     async def _async_update_data(self) -> ScheduleSnapshot:
         """Do not include response bodies, URLs or keys in errors."""
