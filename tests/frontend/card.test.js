@@ -381,7 +381,7 @@ Deno.test("Save stays disabled without an administrator and confirmed changes", 
     "Save must remain unavailable",
   );
   assert(
-    card.shadowRoot.innerHTML.includes("Save überträgt"),
+    card.shadowRoot.innerHTML.includes("Administratorkonto"),
     "Save status missing",
   );
 });
@@ -595,4 +595,90 @@ Deno.test("newer source data and non-admin users cannot save", () => {
   card._hass.user.is_admin = true;
   card._currentEntity().attributes.slots[0].time = "05:00";
   assert(!card._canSave(), "Changed baseline must be blocked");
+});
+
+Deno.test("overview badge describes the view without claiming write protection", () => {
+  const card = makeCard();
+  assert(
+    card.shadowRoot.innerHTML.includes("Wochenübersicht"),
+    "Overview badge missing",
+  );
+  assert(
+    !card.shadowRoot.innerHTML.includes("Nur Lesen"),
+    "Misleading read-only badge remains",
+  );
+  card._handleAction("day", "0");
+  assert(
+    card.shadowRoot.innerHTML.includes('class="badge">Entwurf'),
+    "Draft badge missing",
+  );
+});
+
+Deno.test("configuration arriving after hass still loads save readiness immediately", async () => {
+  const source = makeCard();
+  const calls = [];
+  const card = new BuderusRc30ScheduleCard();
+  card.hass = {
+    ...source._hass,
+    user: { is_admin: true },
+    callWS(payload) {
+      calls.push(payload);
+      return Promise.resolve({
+        state: "idle",
+        busy: false,
+        can_restore: false,
+      });
+    },
+  };
+  assert(calls.length === 0, "No sensor selected yet");
+  card.setConfig({ entity: "sensor.schedule" });
+  await Promise.resolve();
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/save_status",
+    "Readiness must load without waiting for timer or browser reload",
+  );
+  card._handleAction("day", "0");
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  assert(
+    card._canSave(),
+    "Confirmed draft should enable Save after initial readiness",
+  );
+});
+
+Deno.test("blocked Save explains pending Apply and readiness without losing the draft", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  assert(card._canSave(), "Expected ready draft");
+  card._handleAction("period-edit", "0");
+  card._pointForm.from = "06:20";
+  card._render();
+  assert(
+    card._saveBlockReason().includes("Apply"),
+    "Unapplied input must explain the lock",
+  );
+  card._applyPoint();
+  const draft = JSON.stringify(card._draft);
+  card._hass.callWS = () => Promise.reject({ code: "unknown_command" });
+  await card._refreshSaveStatus();
+  assert(
+    !card._canSave() && card._saveBlockReason().includes("neu starten"),
+    "Missing backend should explain restart requirement",
+  );
+  assert(
+    card.shadowRoot.innerHTML.includes("Speicherstatus erneut laden"),
+    "Retry action missing",
+  );
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({ state: "idle", busy: false, can_restore: false });
+  };
+  await card._refreshSaveStatus();
+  assert(
+    card._canSave() && JSON.stringify(card._draft) === draft,
+    "Readiness retry should enable Save without losing changes",
+  );
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/save_status",
+    "Retry must not write or poll the gateway",
+  );
 });
