@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.3.0
+# Buderus RC30 Schedule — v0.3.1
 
 Read-only Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. It reads all **42 physical slots (00–41)** without
@@ -94,7 +94,7 @@ it performs no API requests or service calls and cannot write switching times.
 4. Enter this URL and select **JavaScript module**:
 
    ```text
-   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
+   /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.1
    ```
 
    For a YAML-managed resource list, use:
@@ -103,7 +103,7 @@ it performs no API requests or service calls and cannot write switching times.
    lovelace:
      resource_mode: yaml
      resources:
-       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.0
+       - url: /buderus_rc30/buderus-rc30-schedule-card.js?v=0.3.1
          type: module
    ```
 
@@ -138,6 +138,8 @@ your dashboard configuration.
 - The current-day/time marker and poll timestamp use Home Assistant's configured
   timezone, including DST. The marker assumes the thermostat clock uses the same
   local timezone. Stored switching times are wall-clock values and are not shifted.
+  The current-time line remains visible in today's row while editing a draft;
+  the draft label still identifies the displayed periods as unsaved changes.
 - If another program is active, a warning identifies it while the card continues
   to show **own 1**. It does not infer the heating periods of another program.
 - Unavailable or invalid sensor data hides the timelines. Data older than 30

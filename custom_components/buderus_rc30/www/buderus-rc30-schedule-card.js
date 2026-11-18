@@ -505,7 +505,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }
         ${
         week.days.length
-          ? this._weekMarkup(week, stale || this._draft ? null : clock)
+          ? this._weekMarkup(week, stale ? null : clock)
           : '<p class="notice">Keine Schaltpunkte vorhanden. Daraus lässt sich keine Heizphase ableiten.</p>'
       }
         <div class="footer"><span>${week.occupied} / 42 Slots belegt · ${

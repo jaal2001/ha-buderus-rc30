@@ -142,8 +142,8 @@ Deno.test("local add, edit, remove and undo keep the original sensor unchanged",
     "Draft must be labeled",
   );
   assert(
-    !card.shadowRoot.innerHTML.includes('class="now"'),
-    "Draft must not look live",
+    card.shadowRoot.innerHTML.includes('class="now"'),
+    "Current-time marker should remain visible while editing a draft",
   );
 });
 
