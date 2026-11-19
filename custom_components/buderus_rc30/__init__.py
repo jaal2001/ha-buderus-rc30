@@ -13,7 +13,7 @@ from homeassistant.loader import async_get_integration
 
 from .api import EmsEspClient
 from .const import CARD_PATH, DOMAIN
-from .coordinator import Rc30Coordinator
+from .coordinator import Rc30Coordinator, async_take_validated_schedule
 from .frontend import async_register_card
 from .websocket import async_register_commands
 
@@ -46,7 +46,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool
     )
     coordinator = Rc30Coordinator(hass, entry, client)
     await coordinator.writer.async_initialize()
-    if not await coordinator.async_initialize_cache():
+    validated = async_take_validated_schedule(hass, entry.data[CONF_HOST], entry.data[CONF_API_KEY])
+    if validated is not None:
+        await coordinator.async_accept_snapshot(validated)
+    elif not await coordinator.async_initialize_cache():
         await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

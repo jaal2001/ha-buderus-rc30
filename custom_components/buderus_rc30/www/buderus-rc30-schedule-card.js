@@ -512,7 +512,7 @@ const CSS = `
 
 // The fallback base lets the data functions run in a DOM-free test environment.
 const ElementBase = globalThis.HTMLElement ?? class {};
-const CARD_VERSION = "0.6.0";
+const CARD_VERSION = "0.6.1";
 
 export class BuderusRc30ScheduleCard extends ElementBase {
   constructor() {

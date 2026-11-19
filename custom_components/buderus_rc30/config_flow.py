@@ -10,6 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuthenticationError, EmsEspClient, EmsEspError, InvalidResponse, normalize_host
 from .const import DOMAIN, NAME
+from .coordinator import async_remember_validated_schedule
 
 
 class Rc30ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -28,7 +29,7 @@ class Rc30ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 client = EmsEspClient(
                     async_get_clientsession(self.hass), host, user_input[CONF_API_KEY]
                 )
-                await client.async_read_schedule()
+                snapshot = await client.async_read_schedule(fresh=True)
             except ValueError:
                 errors["base"] = "invalid_input"
             except AuthenticationError:
@@ -38,6 +39,9 @@ class Rc30ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except EmsEspError:
                 errors["base"] = "cannot_connect"
             else:
+                async_remember_validated_schedule(
+                    self.hass, host, user_input[CONF_API_KEY], snapshot
+                )
                 return self.async_create_entry(
                     title=NAME,
                     data={CONF_HOST: host, CONF_API_KEY: user_input[CONF_API_KEY].strip()},
@@ -70,7 +74,7 @@ class Rc30ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     entry.data[CONF_HOST],
                     user_input[CONF_API_KEY],
                 )
-                await client.async_read_schedule()
+                snapshot = await client.async_read_schedule(fresh=True)
             except ValueError:
                 errors["base"] = "invalid_input"
             except AuthenticationError:
@@ -80,6 +84,9 @@ class Rc30ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except EmsEspError:
                 errors["base"] = "cannot_connect"
             else:
+                async_remember_validated_schedule(
+                    self.hass, entry.data[CONF_HOST], user_input[CONF_API_KEY], snapshot
+                )
                 return self.async_update_reload_and_abort(
                     entry, data_updates={CONF_API_KEY: user_input[CONF_API_KEY].strip()}
                 )

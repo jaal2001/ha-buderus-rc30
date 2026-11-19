@@ -1,4 +1,4 @@
-# Buderus RC30 Schedule — v0.6.0
+# Buderus RC30 Schedule — v0.6.1
 
 Home Assistant custom integration for the **HC1, own 1** switching schedule
 through **EMS-ESP32 3.9.1**. The dashboard supports local drafts and explicit,
@@ -16,7 +16,9 @@ No live gateway is contacted during development or automated testing.
 - Home Assistant **2026.10 or newer**; automated integration tests target 2026.10.4
   on Python 3.14. Older Home Assistant versions are not supported by this release.
 - EMS-ESP32 **3.9.1**, exposing `/api/thermostat/hc1/switchtime1` and
-  `/api/thermostat/hc1/program`. Other firmware versions have not been verified.
+  `/api/thermostat/hc1/program`. The owner has also confirmed a complete read with
+  **3.10.0-dev.4**, using a dedicated Read and Write API key; its new limiter has
+  the important compatibility limitation described below.
 - An EMS-ESP API key authorized to execute the selector POST. In 3.9.1 this may
   require write/command permission for both reading selectors and saving slots.
 - Network access from Home Assistant to the gateway.
@@ -259,7 +261,11 @@ of burner activity.
 - On startup or integration reload, a valid saved plan is loaded **without any
   gateway request**. When no valid plan exists, setup performs one full read.
   The first upgrade to 0.6 therefore reads once to create this new cache.
-  Initial configuration/reauthentication still validates the gateway through a read.
+  Initial configuration/reauthentication still validates the gateway through a fresh
+  read. In 0.6.1+, setup consumes that just-validated snapshot instead of repeating
+  the entire scan. The handoff is single-use, bound to the same host and API-key
+  fingerprint (no raw key is retained), and expires after 60 seconds. On key
+  replacement, the new snapshot takes precedence over an older disk cache.
 - **Aktualisieren** is an explicit admin action in the card and day editor.
   It performs one full read and preserves both applied and pending local edits.
   A changed source pauses an existing draft to prevent overwriting outside edits.
@@ -287,6 +293,21 @@ of burner activity.
   requests an explicit full read. Do not repeatedly refresh all four sensors or
   leave an old polling automation running. Failed first setup without a valid
   cache may retry through Home Assistant; a cached restart does not poll.
+
+## EMS-ESP 3.10 development firmware
+
+Use a dedicated **Read and Write** API key. Browser authentication with username
+and password is separate; the integration sends the key as a Bearer header.
+
+3.10.0-dev.4 classifies the two-digit switchtime read selectors as writes for its
+new write limiter, even though these selectors only request reads on the EMS bus.
+A single complete scan already exceeds its default ten-per-entity warning
+threshold. A log warning can therefore appear during a legitimate scan. If refusal
+over the limit is enabled, reads may also be refused. The integration does not
+turn off or override this protection. Version 0.6.1 removes the redundant second
+scan during setup/key replacement; **it does not eliminate this firmware warning**.
+Do not infer real schedule mutations from that warning alone. Actual schedule
+writes still require explicit Save, and no periodic schedule polling is enabled.
 
 ## First live check
 

@@ -100,3 +100,49 @@ async def test_reauth_keeps_old_key_on_failure(hass, config_entry, mock_poll, er
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": expected}
     assert config_entry.data[CONF_API_KEY] == "test-key"
+
+
+async def test_real_setup_reuses_validation_without_a_second_scan(hass, mock_poll, snapshot):
+    """The real flow and setup together must perform exactly one fresh scan."""
+    from homeassistant.config_entries import ConfigEntryState
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}, data=INPUT
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    entry = result["result"]
+    assert entry.state is ConfigEntryState.LOADED
+    mock_poll.assert_awaited_once_with(fresh=True)
+    assert entry.runtime_data.data is snapshot
+    saved = await entry.runtime_data.cache.async_load()
+    assert saved["verified_at"] == snapshot.fetched_at.isoformat()
+    assert len(saved["slots"]) == 42
+    assert "test-key" not in str(saved)
+    assert "buderus_rc30_validated_schedule" not in hass.data
+
+
+async def test_real_reauth_reuses_new_snapshot_instead_of_old_disk_cache(
+    hass, config_entry, mock_poll, snapshot
+):
+    """Key replacement must not read twice or discard the newly verified plan."""
+    from dataclasses import replace
+
+    from homeassistant.util import dt as dt_util
+
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    replacement = replace(snapshot, active_program="own 2", fetched_at=dt_util.utcnow())
+    mock_poll.reset_mock()
+    mock_poll.return_value = replacement
+    await config_entry.start_reauth_flow(hass)
+    flow = hass.config_entries.flow.async_progress()[0]
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], {CONF_API_KEY: "replacement-test-key"}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    mock_poll.assert_awaited_once_with(fresh=True)
+    assert config_entry.runtime_data.data is replacement
+    assert (await config_entry.runtime_data.cache.async_load())["active_program"] == "own 2"
