@@ -162,3 +162,38 @@ async def test_save_readback_is_persisted_without_additional_scan(hass, config_e
     assert await restored.async_initialize_cache()
     assert restored.data == final
     assert client.async_read_locked.await_count == 2
+
+
+def test_validation_handoff_is_single_use_key_bound_and_contains_no_raw_key(hass, snapshot):
+    from custom_components.buderus_rc30.coordinator import (
+        async_remember_validated_schedule,
+        async_take_validated_schedule,
+    )
+
+    origin = "http://ems-esp.example"
+    async_remember_validated_schedule(hass, origin, "test-key", snapshot)
+    assert "test-key" not in str(hass.data["buderus_rc30_validated_schedule"])
+    assert async_take_validated_schedule(hass, "http://other.example", "test-key") is None
+    assert async_take_validated_schedule(hass, origin, " test-key ") is snapshot
+    assert async_take_validated_schedule(hass, origin, "test-key") is None
+    async_remember_validated_schedule(hass, origin, "test-key", snapshot)
+    assert async_take_validated_schedule(hass, origin, "different-key") is None
+    assert async_take_validated_schedule(hass, origin, "test-key") is None
+
+
+def test_validation_handoff_expires_and_prunes_older_origins(hass, snapshot, monkeypatch):
+    from custom_components.buderus_rc30.coordinator import (
+        async_remember_validated_schedule,
+        async_take_validated_schedule,
+    )
+
+    origin = "http://ems-esp.example"
+    monkeypatch.setattr("custom_components.buderus_rc30.coordinator.monotonic", lambda: 0)
+    async_remember_validated_schedule(hass, origin, "test-key", snapshot)
+    monkeypatch.setattr("custom_components.buderus_rc30.coordinator.monotonic", lambda: 61)
+    assert async_take_validated_schedule(hass, origin, "test-key") is None
+    monkeypatch.setattr("custom_components.buderus_rc30.coordinator.monotonic", lambda: 100)
+    async_remember_validated_schedule(hass, origin, "test-key", snapshot)
+    monkeypatch.setattr("custom_components.buderus_rc30.coordinator.monotonic", lambda: 161)
+    async_remember_validated_schedule(hass, "http://other.example", "test-key", snapshot)
+    assert list(hass.data["buderus_rc30_validated_schedule"]) == ["http://other.example"]

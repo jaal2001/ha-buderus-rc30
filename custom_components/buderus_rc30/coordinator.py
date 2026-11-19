@@ -2,6 +2,9 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from hmac import compare_digest
+from time import monotonic
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -14,6 +17,41 @@ from .const import DOMAIN
 from .writer import SaveError, ScheduleWriter
 
 _LOGGER = logging.getLogger(__name__)
+
+_VALIDATED_KEY = f"{DOMAIN}_validated_schedule"
+_VALIDATED_TTL = 60
+
+
+@callback
+def async_remember_validated_schedule(
+    hass: HomeAssistant, host: str, api_key: str, snapshot: ScheduleSnapshot
+) -> None:
+    """Hand a just-validated snapshot to setup without retaining the API key."""
+    now = monotonic()
+    pending = hass.data.setdefault(_VALIDATED_KEY, {})
+    for origin, (_, created, _) in tuple(pending.items()):
+        if now - created > _VALIDATED_TTL:
+            pending.pop(origin)
+    pending[host] = (sha256(api_key.strip().encode()).digest(), now, snapshot)
+
+
+@callback
+def async_take_validated_schedule(
+    hass: HomeAssistant, host: str, api_key: str
+) -> ScheduleSnapshot | None:
+    """Consume once, only for the same origin/key and within the short handoff window."""
+    pending = hass.data.get(_VALIDATED_KEY, {})
+    candidate = pending.pop(host, None)
+    if not pending:
+        hass.data.pop(_VALIDATED_KEY, None)
+    if candidate is None:
+        return None
+    digest, created, snapshot = candidate
+    if monotonic() - created > _VALIDATED_TTL or not compare_digest(
+        digest, sha256(api_key.strip().encode()).digest()
+    ):
+        return None
+    return snapshot
 
 
 class Rc30Coordinator(DataUpdateCoordinator[ScheduleSnapshot]):
