@@ -46,7 +46,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: Rc30ConfigEntry) -> bool
     )
     coordinator = Rc30Coordinator(hass, entry, client)
     await coordinator.writer.async_initialize()
-    await coordinator.async_config_entry_first_refresh()
+    if not await coordinator.async_initialize_cache():
+        await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

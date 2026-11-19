@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
 
@@ -13,7 +12,7 @@ from custom_components.buderus_rc30.api import AuthenticationError, Communicatio
 
 
 async def test_setup_sensors_failure_recovery_and_unload(hass, config_entry, mock_poll, snapshot):
-    """A failed refresh preserves last-good data but makes sensor states unavailable."""
+    """A failed explicit read preserves the stored plan and reports the failure."""
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
@@ -39,10 +38,11 @@ async def test_setup_sensors_failure_recovery_and_unload(hass, config_entry, moc
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert coordinator.data is snapshot
-    assert not coordinator.last_update_success
-    assert all(
-        hass.states.get(entity_id).state == STATE_UNAVAILABLE for entity_id in entities.values()
-    )
+    assert coordinator.last_update_success
+    assert coordinator.refresh_error == "read_failed"
+    assert hass.states.get(schedule_id).state == "38"
+    assert hass.states.get(schedule_id).attributes["refresh_error"] == "read_failed"
+    assert hass.states.get(schedule_id).attributes["verified_at"] == snapshot.fetched_at.isoformat()
     mock_poll.side_effect = None
     mock_poll.return_value = replace(snapshot, active_program="own 2")
     await coordinator.async_refresh()

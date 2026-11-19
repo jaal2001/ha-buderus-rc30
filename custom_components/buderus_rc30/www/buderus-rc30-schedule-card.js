@@ -12,7 +12,6 @@ const LABELS = [
 ];
 const DAY_MINUTES = 1440;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
-const STALE_AFTER = 30 * 60 * 1000;
 const TAG = "buderus-rc30-schedule-card";
 
 /** Validate all physical slots before deriving any heating intervals. */
@@ -390,8 +389,7 @@ export function draftBlockReason(entity, draft, now = Date.now()) {
   }
   const verified = Date.parse(entity.attributes.verified_at);
   if (
-    !Number.isFinite(verified) || now - verified > STALE_AFTER ||
-    verified > now + 300_000
+    !Number.isFinite(verified) || verified > now + 300_000
   ) {
     return "Ein aktueller verifizierter Abruf wird benötigt. Der Entwurf bleibt erhalten.";
   }
@@ -514,7 +512,7 @@ const CSS = `
 
 // The fallback base lets the data functions run in a DOM-free test environment.
 const ElementBase = globalThis.HTMLElement ?? class {};
-const CARD_VERSION = "0.5.1";
+const CARD_VERSION = "0.6.0";
 
 export class BuderusRc30ScheduleCard extends ElementBase {
   constructor() {
@@ -689,7 +687,6 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       if (!Number.isFinite(verified.getTime())) {
         throw new Error("Der Zeitstempel des Abrufs fehlt.");
       }
-      const stale = Date.now() - verified.getTime() > STALE_AFTER;
       const zone = this._hass.config?.time_zone ?? "Europe/Berlin";
       const clock = localClock(new Date(), zone);
       const stamp = new Intl.DateTimeFormat("de-DE", {
@@ -709,23 +706,35 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }
       if (active !== "own 1") {
         warnings.push(
-          `Angezeigt wird own 1. Aktives Programm: ${
+          `Angezeigt wird own 1. Zuletzt gemeldetes aktives Programm: ${
             escapeHtml(active ?? "unbekannt")
           }.`,
         );
       }
-      if (stale) {
+      warnings.push(
+        entity.attributes.automatic_polling === false
+          ? "Gespeicherter Wochenplan. Keine automatischen Abfragen. Änderungen direkt am RC30 werden erst beim Aktualisieren erkannt; vor Save wird frisch gelesen."
+          : "Nach dem Update Home Assistant neu starten. Das Abschalten automatischer Abfragen wurde vom Backend noch nicht bestätigt.",
+      );
+      if (entity.attributes.refresh_error) {
         warnings.push(
-          "Dieser Abruf ist älter als 30 Minuten. Die Zeiten können veraltet sein.",
+          "Der letzte Abruf oder die Abschlussprüfung ist fehlgeschlagen. Angezeigt wird weiterhin der letzte vollständig gelesene Stand.",
+        );
+      }
+      if (entity.attributes.cache_error) {
+        warnings.push(
+          "Der Plan konnte nicht dauerhaft gespeichert werden. Nach einem Neustart kann der gespeicherte Stand älter sein.",
         );
       }
       content = `
         <div class="meta"><span>${
         escapeHtml(
-          active === "own 1" ? "own 1 aktiv" : "own 1 · gespeichertes Programm",
+          active === "own 1"
+            ? "Zuletzt own 1 aktiv"
+            : "own 1 · gespeichertes Programm",
         )
       }</span>
-          <span>Stand ${escapeHtml(stamp)}</span></div>
+          <span>Zuletzt geprüft ${escapeHtml(stamp)}</span></div>
         ${
         warnings.map((warning) =>
           `<p class="notice" role="status">${warning}</p>`
@@ -733,7 +742,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
       }
         ${
         week.days.length
-          ? this._weekMarkup(week, stale ? null : clock)
+          ? this._weekMarkup(week, clock)
           : '<p class="notice">Keine Schaltpunkte vorhanden. Daraus lässt sich keine Heizphase ableiten.</p>'
       }
         <div class="footer"><span>${week.occupied} / 42 Slots belegt · ${
@@ -775,6 +784,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     this.shadowRoot.innerHTML =
       `<style>${CSS}</style><ha-card><div class="body">
       <p class="eyebrow">Buderus RC30 · Heizkreis 1</p>
+      ${this._refreshButton()}
       <div class="heading"><h2>${
         escapeHtml(this._config.title ?? "Wochenprogramm")
       }</h2>
@@ -834,7 +844,53 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     return Boolean(this._saving || this._uncertain || this._saveStatus?.busy);
   }
 
+  _refreshButton() {
+    if (!this._admin()) return "";
+    const busy = this._refreshing ||
+      this._currentEntity()?.attributes.refreshing;
+    return `<div class="toolbar"><button class="action" type="button" data-action="refresh-schedule" ${
+      busy || this._operationLocked() ? "disabled" : ""
+    }>${busy ? "Wird aktualisiert …" : "Aktualisieren"}</button></div>${
+      this._refreshNotice
+        ? `<p class="notice" role="status">${
+          escapeHtml(this._refreshNotice)
+        }</p>`
+        : ""
+    }`;
+  }
+
+  async _refreshSchedule() {
+    if (
+      !this._admin() || this._refreshing || this._operationLocked() ||
+      this._currentEntity()?.attributes.refreshing
+    ) return;
+    this._refreshing = true;
+    this._refreshNotice = null;
+    this._render();
+    try {
+      await this._hass.callWS({
+        type: "buderus_rc30/refresh",
+        entity_id: this._entity,
+      });
+      this._refreshNotice =
+        "Der Wochenplan wurde vollständig neu gelesen. Dein Entwurf bleibt erhalten.";
+    } catch {
+      // Do not retry a full bus scan automatically after a lost response.
+      this._refreshNotice =
+        "Aktualisierung nicht bestätigt. Der gespeicherte Plan und dein Entwurf bleiben erhalten. Bei einer unterbrochenen Verbindung kann der Abruf in Home Assistant noch laufen.";
+    } finally {
+      this._refreshing = false;
+      this._render();
+    }
+  }
+
   _saveBlockReason() {
+    if (this._currentEntity()?.attributes.automatic_polling !== false) {
+      return "Nach dem Update Home Assistant neu starten, damit der gespeicherte Plan ohne automatische Abfragen verwendet wird.";
+    }
+    if (this._refreshing || this._currentEntity()?.attributes.refreshing) {
+      return "Der Wochenplan wird gerade neu gelesen.";
+    }
     if (!this._hass?.user?.is_admin) {
       return "Speichern erfordert ein Home-Assistant-Administratorkonto.";
     }
@@ -1092,6 +1148,10 @@ export class BuderusRc30ScheduleCard extends ElementBase {
   }
 
   _handleAction(action, index) {
+    if (action === "refresh-schedule") {
+      void this._refreshSchedule();
+      return;
+    }
     if (action === "refresh-status") {
       void this._refreshSaveStatus();
       return;
@@ -1495,7 +1555,7 @@ export class BuderusRc30ScheduleCard extends ElementBase {
     }>+ Heizzeit</button><button class="action" type="button" data-action="undo" ${
       blocked || !this._history.length ? "disabled" : ""
     }>Rückgängig</button></div>
-      </div><footer class="dialog-footer"><div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button>${this._saveButton()}</div>${this._saveHint()}</footer>
+      </div><footer class="dialog-footer">${this._refreshButton()}<div class="toolbar"><button class="action" type="button" data-action="preview">Wochenvorschau</button><button class="action" type="button" data-action="discard">Cancel</button>${this._saveButton()}</div>${this._saveHint()}</footer>
     </div></dialog>`;
   }
 

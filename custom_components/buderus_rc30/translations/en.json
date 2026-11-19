@@ -38,10 +38,10 @@
         "name": "Free schedule slots"
       },
       "active_program": {
-        "name": "Active program"
+        "name": "Last reported active program"
       },
       "last_success": {
-        "name": "Last verified poll"
+        "name": "Last verified read"
       }
     }
   }

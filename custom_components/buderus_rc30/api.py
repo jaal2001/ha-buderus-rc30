@@ -272,10 +272,10 @@ class EmsEspClient:
                     raise InvalidResponse("Slot verification timed out") from None
         raise InvalidResponse("Slot verification failed")
 
-    async def async_read_schedule(self) -> ScheduleSnapshot:
+    async def async_read_schedule(self, *, fresh: bool = False) -> ScheduleSnapshot:
         """Publish only complete passes; never return a partial schedule."""
         async with self.async_transaction():
-            return await self.async_read_locked()
+            return await self.async_read_locked(fresh=fresh)
 
     async def async_read_locked(self, *, fresh: bool = False) -> ScheduleSnapshot:
         """Force a different cached slot before a save's complete verification pass."""

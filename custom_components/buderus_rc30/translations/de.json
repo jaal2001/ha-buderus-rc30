@@ -38,7 +38,7 @@
         "name": "Freie Schaltpunkt-Slots"
       },
       "active_program": {
-        "name": "Aktives Programm"
+        "name": "Zuletzt gemeldetes aktives Programm"
       },
       "last_success": {
         "name": "Letzter verifizierter Abruf"

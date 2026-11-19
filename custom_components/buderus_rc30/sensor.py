@@ -84,4 +84,9 @@ class Rc30Sensor(CoordinatorEntity[Rc30Coordinator], SensorEntity):
             "verified_at": data.fetched_at.isoformat(),
             "slots": [slot.as_dict() for slot in data.slots],
             "save_status": self.coordinator.writer.status(),
+            "schedule_source": self.coordinator.schedule_source,
+            "refresh_error": self.coordinator.refresh_error,
+            "cache_error": self.coordinator.cache_error,
+            "refreshing": self.coordinator.refreshing,
+            "automatic_polling": False,
         }

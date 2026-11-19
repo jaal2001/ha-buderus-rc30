@@ -33,7 +33,7 @@ def _writer(hass: HomeAssistant, entity_id: str) -> ScheduleWriter:
 @callback
 def async_register_commands(hass: HomeAssistant) -> None:
     """Register once during integration setup."""
-    for command in (ws_save, ws_status, ws_restore):
+    for command in (ws_save, ws_status, ws_restore, ws_refresh):
         websocket_api.async_register_command(hass, command)
 
 
@@ -103,3 +103,23 @@ async def ws_restore(
 ) -> None:
     """Restore a durable fallback only after a separate explicit confirmation."""
     await _execute(hass, connection, msg, "restore")
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "buderus_rc30/refresh",
+        probatio.Required("entity_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_refresh(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Explicitly read all slots, without changing the draft or writing any slot."""
+    try:
+        writer = _writer(hass, msg["entity_id"])
+        await writer.coordinator.async_refresh_schedule()
+        connection.send_result(msg["id"], {"refreshed": True})
+    except SaveError as err:
+        connection.send_error(msg["id"], err.code, "Schedule refresh could not be completed")
