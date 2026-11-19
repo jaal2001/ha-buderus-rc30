@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .api import EmsEspError, decode_slots
 from .const import DOMAIN
@@ -139,7 +138,7 @@ class ScheduleWriter:
                 if current.active_program != "own 1":
                     raise SaveError("program_changed")
                 if current.slots != expected:
-                    self.coordinator.async_set_updated_data(current)
+                    await self.coordinator.async_accept_snapshot(current)
                     raise SaveError("source_changed")
                 self.record.update(
                     before=[slot.as_dict() for slot in current.slots],
@@ -166,15 +165,13 @@ class ScheduleWriter:
                 try:
                     actual = await self.client.async_read_locked(fresh=True)
                     self.record["observed"] = [slot.as_dict() for slot in actual.slots]
-                    self.coordinator.async_set_updated_data(actual)
+                    await self.coordinator.async_accept_snapshot(actual)
                     if actual.active_program == "own 1" and actual.slots == target:
                         return await self._finish("succeeded")
                     error = error or "verification_failed"
                 except EmsEspError:
                     error = error or "read_failed"
-                    self.coordinator.async_set_update_error(
-                        UpdateFailed("Save could not be verified")
-                    )
+                    self.coordinator.async_snapshot_error("verification_failed")
                 return await self._finish("recovery_required", error)
         except asyncio.CancelledError:
             self._phase("recovery_required" if armed else "rejected", error="interrupted")
@@ -249,15 +246,13 @@ class ScheduleWriter:
                 try:
                     final = await self.client.async_read_locked(fresh=True)
                     self.record["observed"] = [slot.as_dict() for slot in final.slots]
-                    self.coordinator.async_set_updated_data(final)
+                    await self.coordinator.async_accept_snapshot(final)
                     if final.active_program == "own 1" and final.slots == before:
                         return await self._finish("rolled_back")
                     error = error or "verification_failed"
                 except EmsEspError:
                     error = error or "read_failed"
-                    self.coordinator.async_set_update_error(
-                        UpdateFailed("Restore could not be verified")
-                    )
+                    self.coordinator.async_snapshot_error("verification_failed")
                 return await self._finish("recovery_required", error)
         except asyncio.CancelledError:
             self._phase("recovery_required", error="interrupted")

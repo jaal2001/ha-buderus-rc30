@@ -67,7 +67,8 @@ def setup_writer(hass):
     coordinator = SimpleNamespace(
         client=gateway,
         async_update_listeners=Mock(),
-        async_set_updated_data=Mock(),
+        async_accept_snapshot=AsyncMock(),
+        async_snapshot_error=Mock(),
         async_set_update_error=Mock(),
     )
     writer = ScheduleWriter(hass, "synthetic-entry", coordinator)

@@ -38,6 +38,7 @@ function makeCard(
         state,
         attributes: {
           heating_circuit: 1,
+          automatic_polling: false,
           schedule_program: "own 1",
           capacity: 42,
           free_slots: 40,
@@ -304,9 +305,9 @@ Deno.test("invalid range input stays editable and cannot change the draft", () =
     "Invalid range was applied",
   );
 });
-Deno.test("unavailable, stale and inactive sources cannot start editing", () => {
+Deno.test("unavailable and inactive sources cannot start editing", () => {
   for (
-    const options of [{ state: "unavailable" }, { age: 31 * 60_000 }, {
+    const options of [{ state: "unavailable" }, {
       active: "own 2",
     }]
   ) {
@@ -318,17 +319,24 @@ Deno.test("unavailable, stale and inactive sources cannot start editing", () => 
     );
   }
 });
-Deno.test("stale live data has a warning and no current-time line", () => {
+Deno.test("stored plans identify their verification time and retain the clock marker", () => {
   const html = render({ age: 60 * 60_000 });
-  assert(html.includes("älter als 30 Minuten"), "Stale warning missing");
   assert(
-    !html.includes('class="now"'),
-    "Stale overview should not imply live data",
+    html.includes("Keine automatischen Abfragen") &&
+      html.includes("Zuletzt geprüft"),
+    "Stale warning missing",
+  );
+  assert(
+    html.includes('class="now"'),
+    "Clock marker should remain available for stored plans",
   );
 });
 Deno.test("an inactive source program is explicitly identified", () => {
   const html = render({ active: "own 2" });
-  assert(html.includes("Aktives Programm: own 2"), "Program warning missing");
+  assert(
+    html.includes("Zuletzt gemeldetes aktives Programm: own 2"),
+    "Program warning missing",
+  );
 });
 Deno.test("titles, gateway values and invalid form text cannot inject markup", () => {
   const html = render({
@@ -680,5 +688,106 @@ Deno.test("blocked Save explains pending Apply and readiness without losing the 
   assert(
     calls.length === 1 && calls[0].type === "buderus_rc30/save_status",
     "Retry must not write or poll the gateway",
+  );
+});
+
+Deno.test("old stored plans remain editable and saveable without automatic refresh", () => {
+  const { card, calls } = adminCard();
+  card._currentEntity().attributes.verified_at = new Date(
+    Date.now() - 7 * 24 * 60 * 60_000,
+  ).toISOString();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  assert(card._canSave(), "Age alone must not force another background scan");
+  assert(calls.length === 0, "Opening and editing an old plan must not poll");
+  assert(
+    card.shadowRoot.innerHTML.includes("Keine automatischen Abfragen"),
+    "Stored-plan explanation missing",
+  );
+});
+
+Deno.test("explicit refresh sends one read command and preserves applied and pending edits", async () => {
+  const { card, calls } = adminCard();
+  applyRange(card, "period-edit", "0", "06:10", "09:00");
+  card._handleAction("period-edit", "0");
+  card._pointForm.to = "09:10";
+  const draft = JSON.stringify(card._draft);
+  const form = JSON.stringify(card._pointForm);
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.resolve({ refreshed: true });
+  };
+  await card._refreshSchedule();
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/refresh",
+    "Refresh must issue exactly one read command",
+  );
+  assert(
+    JSON.stringify(card._draft) === draft &&
+      JSON.stringify(card._pointForm) === form,
+    "Refresh lost local edits",
+  );
+  assert(!card._refreshing, "Refresh lock remained active");
+});
+
+Deno.test("refresh failures retain the plan and never retry automatically", async () => {
+  const { card, calls } = adminCard();
+  const draft = JSON.stringify(card._draft);
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return Promise.reject(new Error("Offline"));
+  };
+  await card._refreshSchedule();
+  assert(
+    calls.length === 1 && calls[0].type === "buderus_rc30/refresh",
+    "Failure must not repeat full scans",
+  );
+  assert(
+    JSON.stringify(card._draft) === draft && !card._refreshing,
+    "Failure must retain local plan",
+  );
+  assert(
+    card._refreshNotice.includes("gespeicherte Plan"),
+    "Failure explanation missing",
+  );
+});
+
+Deno.test("duplicate refresh clicks and refresh during Save do not send extra scans", async () => {
+  const { card, calls } = adminCard();
+  let finish;
+  card._hass.callWS = (payload) => {
+    calls.push(payload);
+    return new Promise((resolve) => finish = resolve);
+  };
+  const refresh = card._refreshSchedule();
+  await card._refreshSchedule();
+  assert(
+    calls.length === 1 && !card._canSave(),
+    "Duplicate refresh must be blocked",
+  );
+  finish({ refreshed: true });
+  await refresh;
+  card._saving = true;
+  await card._refreshSchedule();
+  assert(
+    calls.length === 1,
+    "Active Save must prevent manual scan interleaving",
+  );
+});
+
+Deno.test("a new card cannot claim polling is off while the old backend is still running", () => {
+  const { card } = adminCard();
+  delete card._currentEntity().attributes.automatic_polling;
+  card._render();
+  assert(
+    card.shadowRoot.innerHTML.includes("noch nicht bestätigt"),
+    "Restart requirement must be explicit",
+  );
+  assert(
+    !card.shadowRoot.innerHTML.includes("Keine automatischen Abfragen"),
+    "Old backend must not be presented as manual-only",
+  );
+  assert(
+    !card._canSave() && card._saveBlockReason().includes("neu starten"),
+    "Mixed versions need an explicit restart explanation",
   );
 });

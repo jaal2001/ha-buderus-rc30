@@ -8,7 +8,7 @@ import pytest
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.buderus_rc30.websocket import ws_restore, ws_save, ws_status
+from custom_components.buderus_rc30.websocket import ws_refresh, ws_restore, ws_save, ws_status
 from custom_components.buderus_rc30.writer import SaveError
 
 
@@ -47,12 +47,12 @@ async def test_status_is_local_and_excludes_backup(hass, loaded):
     assert "before" not in result[1]
 
 
-@pytest.mark.parametrize("command", [ws_save, ws_restore, ws_status])
+@pytest.mark.parametrize("command", [ws_save, ws_restore, ws_status, ws_refresh])
 async def test_all_commands_require_admin(hass, loaded, command):
     entity, writer = loaded
     writer.async_save = AsyncMock()
     message = {"id": 1, "type": command._ws_command, "entity_id": entity}
-    if command is not ws_status:
+    if command in (ws_save, ws_restore):
         message.update(request_id="test", confirmed=True)
     if command is ws_save:
         message.update(expected_slots=[], slots=[])
@@ -147,3 +147,19 @@ async def test_invalid_full_schedule_is_rejected_by_real_backend(hass, loaded):
     )
     assert result[1] == "invalid_schedule"
     assert writer.status()["state"] == "idle"
+
+
+async def test_refresh_command_reads_once_and_status_never_polls(hass, loaded, mock_poll):
+    entity, writer = loaded
+    mock_poll.reset_mock()
+    for _ in range(3):
+        await invoke(
+            hass, ws_status, {"id": 1, "type": "buderus_rc30/save_status", "entity_id": entity}
+        )
+    mock_poll.assert_not_awaited()
+    result = await invoke(
+        hass, ws_refresh, {"id": 2, "type": "buderus_rc30/refresh", "entity_id": entity}
+    )
+    assert result == ("result", {"refreshed": True})
+    mock_poll.assert_awaited_once_with(fresh=True)
+    assert not writer.coordinator.refreshing

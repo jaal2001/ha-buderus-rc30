@@ -143,13 +143,10 @@ Deno.test("actual source schedule changes pause an existing draft", () => {
   entity.attributes.slots[0].time = "00:10";
   assert(draftBlockReason(entity, draft)?.includes("geändert"));
 });
-Deno.test("offline, stale, future, inactive and malformed sources block editing", () => {
+Deno.test("offline, future, inactive and malformed sources block editing", () => {
   for (
     const mutate of [
       (entity) => entity.state = "unavailable",
-      (entity) =>
-        entity.attributes.verified_at = new Date(Date.now() - 31 * 60_000)
-          .toISOString(),
       (entity) =>
         entity.attributes.verified_at = new Date(Date.now() + 10 * 60_000)
           .toISOString(),
